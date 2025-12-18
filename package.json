@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "ingest": "tsx src/scripts/ingest.ts"
   },
   "dependencies": {
     "@danielxceron/youtube-transcript": "^1.2.3",
