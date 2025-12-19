@@ -190,7 +190,7 @@ export async function searchVideos(
       cleaned_text
     `)
     .eq('video.status', 'completed')
-    .textSearch('cleaned_text', searchTerms, { type: 'websearch', config: 'english' })
+    .textSearch('raw_text', searchTerms, { type: 'websearch', config: 'english' })
     .limit(limit);
 
   // Run in parallel

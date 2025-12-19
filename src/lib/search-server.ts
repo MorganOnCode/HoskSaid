@@ -41,14 +41,86 @@ export async function semanticSearch(query: string, limit: number = 20): Promise
     }
 }
 
+export async function tagSearch(query: string, limit: number = 20): Promise<VideoWithDetails[]> {
+    const client = createBrowserClient();
+
+    // Search for tags that match the query
+    const { data: videos, error } = await client
+        .from('videos')
+        .select(`
+            *,
+            channel:channels(*),
+            transcript:transcripts(summary, cleaned_text),
+            tags:video_tags!inner(tag:tags!inner(*))
+        `)
+        .ilike('tags.tag.name', `%${query}%`)
+        .eq('status', 'completed')
+        .limit(limit);
+
+    if (error) {
+        // Postgrest shallow join filtering can be tricky. 
+        // Fallback or simpler query often preferred if deep relation filtering fails.
+        // Let's try finding the tag UUID first.
+        return fallbackTagSearch(query, limit);
+    }
+
+    // Flatten tags
+    return (videos || []).map((video: any) => ({
+        ...video,
+        tags: video.tags?.map((vt: any) => vt.tag) || [],
+    }));
+}
+
+async function fallbackTagSearch(query: string, limit: number): Promise<VideoWithDetails[]> {
+    const client = createBrowserClient();
+
+    // 1. Find Tag IDs
+    const { data: foundTags } = await client
+        .from('tags')
+        .select('id')
+        .ilike('name', query) // Exact-ish match preferred for clicking "tags"
+        .limit(10);
+
+    if (!foundTags || foundTags.length === 0) return [];
+    const tagIds = foundTags.map(t => t.id);
+
+    // 2. Find Videos with those tags
+    const { data: videoTags } = await client
+        .from('video_tags')
+        .select('video_id')
+        .in('tag_id', tagIds);
+
+    if (!videoTags || videoTags.length === 0) return [];
+    const videoIds = [...new Set(videoTags.map(vt => vt.video_id))];
+
+    // 3. Fetch Details
+    const { data: videos } = await client
+        .from('videos')
+        .select(`
+            *,
+            channel:channels(*),
+            transcript:transcripts(summary, cleaned_text),
+            tags:video_tags(tag:tags(*))
+        `)
+        .in('id', videoIds)
+        .eq('status', 'completed')
+        .limit(limit);
+
+    return (videos || []).map((video: any) => ({
+        ...video,
+        tags: video.tags?.map((vt: any) => vt.tag) || [],
+    }));
+}
+
 export async function hybridSearch(query: string, limit: number = 20): Promise<VideoWithDetails[]> {
     const adminClient = getAdminClient();
     const browserClient = createBrowserClient(); // For standard search
 
     // Run parallel searches
-    const [semanticResults, keywordResults] = await Promise.all([
+    const [semanticResults, keywordResults, tagResults] = await Promise.all([
         semanticSearch(query, limit),
-        searchVideos(browserClient, query, { limit })
+        searchVideos(browserClient, query, { limit }),
+        tagSearch(query, limit)
     ]);
 
     // Process Semantic Results to get full video details
@@ -86,9 +158,8 @@ export async function hybridSearch(query: string, limit: number = 20): Promise<V
         }
     }
 
-    // Merge Results: Score semantic higher? or just deduplicate?
-    // We'll put Semantic matches FIRST, then standard results.
-    const allVideos = [...semanticVideos, ...keywordResults];
+    // Merge Results: Tag First, then Semantic, then Keyword
+    const allVideos = [...tagResults, ...semanticVideos, ...keywordResults];
 
     // Deduplicate by ID
     const seenIds = new Set();

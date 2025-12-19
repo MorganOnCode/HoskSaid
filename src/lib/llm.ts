@@ -132,13 +132,13 @@ export async function generateTags(text: string): Promise<string[]> {
                 content: `You are a content tagger. Generate 5-10 relevant tags for this video transcript.
 
 Guidelines:
-- Tags should be lowercase, single words or short phrases
-- Include topic categories (e.g., "governance", "development", "community")
-- Include specific project/technology names mentioned
-- Include relevant themes
+- Tags should be Title Case (e.g. "Smart Contracts", NOT "smart contracts")
+- Tags should be short (1-3 words)
+- Focus on specific names, projects, and distinct topics
+- Avoid generic terms like "blockchain", "crypto", "video", "update"
 - Return as a JSON array of strings
 
-Example output: ["cardano", "governance", "voltaire", "smart contracts", "development update"]`,
+Example output: ["Cardano", "Governance", "Voltaire", "Smart Contracts", "Hydra Head"]`,
             },
             {
                 role: 'user',

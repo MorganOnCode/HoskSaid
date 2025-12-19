@@ -165,12 +165,12 @@ export default async function VideoPage({ params }: PageProps) {
 
                 {/* Tags */}
                 {video.tags && video.tags.length > 0 && (
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="mt-6 flex flex-wrap gap-2">
                         {video.tags.map((tag) => (
                             <Link
                                 key={tag.id}
                                 href={`/search?q=${encodeURIComponent(tag.name)}`}
-                                className="tag"
+                                className="px-3 py-1 rounded-full text-xs font-medium bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--color-primary)] hover:text-white transition-colors"
                             >
                                 {tag.name}
                             </Link>

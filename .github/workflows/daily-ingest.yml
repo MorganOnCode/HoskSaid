@@ -1,0 +1,45 @@
+name: Daily Content Ingestion
+
+on:
+  schedule:
+    # Run every day at 08:00 UTC
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  ingest:
+    name: Ingest & Enrich
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Ingestion (Fetch New Videos)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        # Run standard ingestion (includes LLM summary/tags generation)
+        # Limit 10/day to stay within API quotas and catch up gradually if behind
+        run: npm run ingest -- --channel=UCiJiqEvUZxT6isIaXK7RXTg --limit=10
+
+      - name: Update Embeddings (Vector Search)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        # Generate embeddings for any videos that missed them (including the ones just ingested)
+        run: npm run generate-embeddings -- --limit=20
