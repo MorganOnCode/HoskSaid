@@ -179,3 +179,24 @@ export async function processTranscript(rawText: string): Promise<{
 
     return { cleanedText, summary, tags };
 }
+
+/**
+ * Generate a vector embedding for the given text using OpenAI text-embedding-3-small
+ * Dimensions: 1536
+ */
+export async function generateEmbedding(text: string): Promise<number[]> {
+    const client = getClient();
+
+    // Cleanup text to remove newlines/excess whitespace which can affect embeddings
+    const cleanText = text.replace(/\n/g, ' ').trim();
+
+    if (!cleanText) return [];
+
+    const response = await client.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: cleanText,
+        dimensions: 1536
+    });
+
+    return response.data[0].embedding;
+}

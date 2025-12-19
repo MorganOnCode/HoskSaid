@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "ingest": "tsx src/scripts/ingest.ts"
+    "ingest": "tsx src/scripts/ingest.ts",
+    "enrich": "tsx src/scripts/enrich.ts",
+    "generate-embeddings": "tsx src/scripts/generate-embeddings.ts"
   },
   "dependencies": {
     "@danielxceron/youtube-transcript": "^1.2.3",

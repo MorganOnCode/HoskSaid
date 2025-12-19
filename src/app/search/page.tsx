@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { createBrowserClient, searchVideos, type VideoWithDetails } from "@/lib/supabase";
+import { hybridSearch } from "@/lib/search-server";
+import { type VideoWithDetails } from "@/lib/supabase";
 import { Metadata } from "next";
 
 interface PageProps {
@@ -26,8 +27,8 @@ async function search(query: string): Promise<VideoWithDetails[]> {
     if (!query.trim()) return [];
 
     try {
-        const supabase = createBrowserClient();
-        return await searchVideos(supabase, query, { limit: 50 });
+        // Use hybrid search (Server-Side)
+        return await hybridSearch(query, 50);
     } catch (error) {
         console.error("Search failed:", error);
         return [];
