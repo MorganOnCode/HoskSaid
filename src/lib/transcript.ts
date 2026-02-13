@@ -1,4 +1,4 @@
-import { YoutubeTranscript } from '@danielxceron/youtube-transcript';
+import { YoutubeTranscript } from 'youtube-transcript';
 
 export interface TranscriptSegment {
     text: string;
