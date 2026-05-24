@@ -1,0 +1,14 @@
+.git
+.github
+.next
+node_modules
+data
+docker/init-db.sql
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+README.md
+PRD.md
+preview-testnet-guide.md

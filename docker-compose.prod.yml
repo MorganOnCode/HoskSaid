@@ -1,0 +1,113 @@
+# HoskSaid production stack — self-hosted on VPS.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Pattern matches /opt/cardano402/docker-compose.prod.yml: app bound to
+# 127.0.0.1 only (cloudflared tunnels traffic in), Postgres reachable
+# only on the internal compose network (never exposed to the host or LAN).
+
+services:
+  postgres:
+    # pgvector/pgvector ships pgvector compiled against the official image.
+    # pg16 because that's what Supabase has been running for new projects.
+    image: pgvector/pgvector:pg16
+    container_name: hosksaid-postgres
+    restart: unless-stopped
+    # NOT exposed to host — only the app container can reach it via the
+    # internal compose network. If you ever need psql from the host, use
+    # `docker compose exec postgres psql -U hosksaid`.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hosksaid}
+      POSTGRES_USER: ${POSTGRES_USER:-hosksaid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Trust localhost-on-container only; everything else needs the password.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once on a fresh data volume. To re-apply against an existing DB,
+      # `docker compose exec -T postgres psql -U hosksaid -d hosksaid < docker/init-db.sql`
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hosksaid} -d ${POSTGRES_DB:-hosksaid}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hosksaid:latest
+    container_name: hosksaid-web
+    restart: unless-stopped
+    # 3001 to avoid clashing with cardano402 on 3000. Same loopback-only
+    # bind pattern — cloudflared on the host tunnels thehosksaid.com here.
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      NODE_ENV: production
+      # Internal connection over the compose network; never traverses the
+      # host. The driver expects a postgres:// URL.
+      DATABASE_URL: postgres://${POSTGRES_USER:-hosksaid}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hosksaid}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:?YOUTUBE_API_KEY must be set in .env}
+      DEFAULT_CHANNEL_ID: ${DEFAULT_CHANNEL_ID:-UCiJiqEvUZxT6isIaXK7RXTg}
+      CRON_SECRET: ${CRON_SECRET:?CRON_SECRET must be set in .env}
+      # Pages that hit the DB at request time need ISR/SSG to know we want
+      # a Node runtime, not edge. Next reads this for fetch cache TTL hints.
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # One-shot ingestion runner. Not started by `up`; invoked on the systemd
+  # timer with `docker compose run --rm scheduler <script>`.
+  # Built from the same image so it shares node_modules + compiled src.
+  scheduler:
+    image: hosksaid:latest
+    container_name: hosksaid-scheduler
+    profiles: ["scheduler"]   # excluded from default `up`
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-hosksaid}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hosksaid}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
+      DEFAULT_CHANNEL_ID: ${DEFAULT_CHANNEL_ID:-UCiJiqEvUZxT6isIaXK7RXTg}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Entrypoint overridden per-invocation; default is the daily pipeline.
+    # Scripts run as TypeScript via tsx (kept in node_modules). Default
+    # command runs the daily pipeline; override to invoke one script:
+    #   docker compose -f docker-compose.prod.yml --profile scheduler \
+    #     run --rm scheduler npx tsx src/scripts/ingest.ts --channel=UC... --limit=10
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      npx tsx src/scripts/ingest.ts --channel=$${DEFAULT_CHANNEL_ID} --limit=20 \
+      && npx tsx src/scripts/enrich.ts --limit=50 \
+      && npx tsx src/scripts/generate-embeddings.ts --limit=50
+
+volumes:
+  postgres_data:

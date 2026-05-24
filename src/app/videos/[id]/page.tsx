@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { createBrowserClient, getVideoByYoutubeId, type VideoWithDetails } from "@/lib/supabase";
+import { getVideoByYoutubeId, type VideoWithDetails } from "@/lib/db";
 import { Metadata } from "next";
 import { CopyButton } from "@/components/CopyButton";
 import { cleanTranscriptText } from "@/lib/transcript";
@@ -13,8 +13,7 @@ interface PageProps {
 
 async function getVideo(youtubeId: string): Promise<VideoWithDetails | null> {
     try {
-        const supabase = createBrowserClient();
-        return await getVideoByYoutubeId(supabase, youtubeId);
+        return await getVideoByYoutubeId(youtubeId);
     } catch (error) {
         console.error("Failed to fetch video:", error);
         return null;

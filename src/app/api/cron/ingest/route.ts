@@ -1,112 +1,81 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { getChannelVideos, getVideo, parseDuration } from '@/lib/youtube';
+import { sql } from '@/lib/db';
+import { getChannelVideos, parseDuration } from '@/lib/youtube';
 import { fetchTranscript } from '@/lib/transcript';
 import { processTranscript } from '@/lib/llm';
 
 /**
- * Cron endpoint for automated video ingestion
- * 
- * Can be triggered by:
- * - Vercel Cron Jobs
- * - n8n/Make.com webhook
- * - Manual API call
- * 
- * Security: Requires CRON_SECRET header or query param
+ * Cron endpoint for automated video ingestion.
+ *
+ * Triggers:
+ *  - Manual: GET /api/cron/ingest?secret=<CRON_SECRET>
+ *  - Webhook: POST /api/cron/ingest (with x-cron-secret header)
+ *  - Systemd timer can call this via curl as an alternative to the
+ *    `scheduler` compose service; in practice the timer runs the scripts
+ *    directly, so this route is mostly for ad-hoc triggers.
  */
 
-function getSupabase() {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!url || !key) {
-        throw new Error('Missing Supabase environment variables');
-    }
-
-    return createClient(url, key);
-}
+// Force a Node runtime — pg only works in Node, not Edge.
+export const runtime = 'nodejs';
 
 function verifyCronSecret(request: NextRequest): boolean {
     const secret = process.env.CRON_SECRET;
-    if (!secret) return true; // No secret configured, allow all (dev mode)
-
+    if (!secret) return true; // Dev mode: no secret configured.
     const headerSecret = request.headers.get('x-cron-secret');
     const querySecret = request.nextUrl.searchParams.get('secret');
-
     return headerSecret === secret || querySecret === secret;
 }
 
 export async function GET(request: NextRequest) {
-    // Verify authorization
     if (!verifyCronSecret(request)) {
-        return NextResponse.json(
-            { error: 'Unauthorized' },
-            { status: 401 }
-        );
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const channelId = process.env.DEFAULT_CHANNEL_ID || 'UCiJiqEvUZxT6isIaXK7RXTg';
-    const supabase = getSupabase();
     const results = { processed: 0, skipped: 0, failed: 0, errors: [] as string[] };
 
     try {
         console.log(`[Cron] Starting ingestion for channel: ${channelId}`);
 
-        // Get the latest video we have
-        const { data: latestVideo } = await supabase
-            .from('videos')
-            .select('published_at')
-            .order('published_at', { ascending: false })
-            .limit(1)
-            .single();
-
-        const checkSince = latestVideo?.published_at
-            ? new Date(latestVideo.published_at)
-            : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Default: last 7 days
+        const latestVideoRows = await sql<{ published_at: string | null }[]>`
+            SELECT published_at FROM videos
+            WHERE published_at IS NOT NULL
+            ORDER BY published_at DESC
+            LIMIT 1
+        `;
+        const checkSince = latestVideoRows[0]?.published_at
+            ? new Date(latestVideoRows[0].published_at)
+            : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
         console.log(`[Cron] Checking for videos since: ${checkSince.toISOString()}`);
 
-        // Fetch recent videos from YouTube (just first page for cron)
         const { videos } = await getChannelVideos(channelId, {
             maxResults: 10,
-            publishedAfter: checkSince
+            publishedAfter: checkSince,
         });
 
         console.log(`[Cron] Found ${videos.length} recent videos`);
 
-        // Ensure channel exists
-        const { data: existingChannel } = await supabase
-            .from('channels')
-            .select('id')
-            .eq('youtube_id', channelId)
-            .single();
-
-        let channelDbId = existingChannel?.id;
-
+        // Ensure channel row exists.
+        const existingChannelRows = await sql<{ id: string }[]>`
+            SELECT id FROM channels WHERE youtube_id = ${channelId} LIMIT 1
+        `;
+        let channelDbId = existingChannelRows[0]?.id;
         if (!channelDbId) {
-            // Create channel entry
-            const { data: newChannel, error } = await supabase
-                .from('channels')
-                .insert({
-                    youtube_id: channelId,
-                    name: 'Charles Hoskinson',
-                })
-                .select()
-                .single();
-
-            if (error) throw error;
+            const [newChannel] = await sql<{ id: string }[]>`
+                INSERT INTO channels (youtube_id, name)
+                VALUES (${channelId}, 'Charles Hoskinson')
+                RETURNING id
+            `;
             channelDbId = newChannel.id;
         }
 
-        // Process each video
         for (const ytVideo of videos) {
             try {
-                // Check if already processed
-                const { data: existing } = await supabase
-                    .from('videos')
-                    .select('id, status')
-                    .eq('youtube_id', ytVideo.id)
-                    .single();
+                const existingRows = await sql<{ id: string; status: string }[]>`
+                    SELECT id, status FROM videos WHERE youtube_id = ${ytVideo.id} LIMIT 1
+                `;
+                const existing = existingRows[0];
 
                 if (existing?.status === 'completed') {
                     results.skipped++;
@@ -115,43 +84,33 @@ export async function GET(request: NextRequest) {
 
                 console.log(`[Cron] Processing: ${ytVideo.title.slice(0, 50)}...`);
 
-                // Insert/update video
                 let videoDbId: string;
                 if (existing) {
                     videoDbId = existing.id;
-                    await supabase.from('videos').update({ status: 'processing' }).eq('id', videoDbId);
+                    await sql`UPDATE videos SET status = 'processing' WHERE id = ${videoDbId}`;
                 } else {
-                    const { data: newVideo, error } = await supabase
-                        .from('videos')
-                        .insert({
-                            channel_id: channelDbId,
-                            youtube_id: ytVideo.id,
-                            title: ytVideo.title,
-                            description: ytVideo.description,
-                            published_at: ytVideo.publishedAt,
-                            duration_seconds: parseDuration(ytVideo.duration),
-                            thumbnail_url: ytVideo.thumbnailUrl,
-                            view_count: ytVideo.viewCount,
-                            status: 'processing',
-                        })
-                        .select()
-                        .single();
-
-                    if (error) throw error;
-                    videoDbId = newVideo.id;
+                    const [row] = await sql<{ id: string }[]>`
+                        INSERT INTO videos (
+                            channel_id, youtube_id, title, description, published_at,
+                            duration_seconds, thumbnail_url, view_count, status
+                        ) VALUES (
+                            ${channelDbId}, ${ytVideo.id}, ${ytVideo.title},
+                            ${ytVideo.description ?? null}, ${ytVideo.publishedAt ?? null},
+                            ${parseDuration(ytVideo.duration)}, ${ytVideo.thumbnailUrl ?? null},
+                            ${ytVideo.viewCount ?? null}, 'processing'
+                        ) RETURNING id
+                    `;
+                    videoDbId = row.id;
                 }
 
-                // Fetch transcript
                 const transcriptResult = await fetchTranscript(ytVideo.id);
-
                 if (!transcriptResult) {
-                    await supabase.from('videos').update({ status: 'failed' }).eq('id', videoDbId);
+                    await sql`UPDATE videos SET status = 'failed' WHERE id = ${videoDbId}`;
                     results.failed++;
                     results.errors.push(`No transcript: ${ytVideo.id}`);
                     continue;
                 }
 
-                // Process with LLM
                 let cleanedText = transcriptResult.text;
                 let summary = '';
                 let tags: string[] = [];
@@ -163,37 +122,39 @@ export async function GET(request: NextRequest) {
                     tags = processed.tags;
                 } catch (llmError) {
                     console.error(`[Cron] LLM error for ${ytVideo.id}:`, llmError);
-                    // Continue with raw transcript
                 }
 
-                // Save transcript
-                await supabase.from('transcripts').upsert({
-                    video_id: videoDbId,
-                    raw_text: transcriptResult.text,
-                    cleaned_text: cleanedText,
-                    summary: summary || null,
-                    source: transcriptResult.source,
-                    processing_status: 'completed',
-                });
+                await sql`
+                    INSERT INTO transcripts (
+                        video_id, raw_text, cleaned_text, summary, source, processing_status
+                    ) VALUES (
+                        ${videoDbId}, ${transcriptResult.text}, ${cleanedText},
+                        ${summary || null}, ${transcriptResult.source}, 'completed'
+                    )
+                    ON CONFLICT (video_id) DO UPDATE SET
+                        raw_text          = EXCLUDED.raw_text,
+                        cleaned_text      = EXCLUDED.cleaned_text,
+                        summary           = EXCLUDED.summary,
+                        source            = EXCLUDED.source,
+                        processing_status = EXCLUDED.processing_status
+                `;
 
-                // Save tags
                 for (const tagName of tags) {
-                    const { data: tag } = await supabase
-                        .from('tags')
-                        .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
-                        .select()
-                        .single();
-
+                    const [tag] = await sql<{ id: string }[]>`
+                        INSERT INTO tags (name) VALUES (${tagName.toLowerCase()})
+                        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                        RETURNING id
+                    `;
                     if (tag) {
-                        await supabase.from('video_tags').upsert({
-                            video_id: videoDbId,
-                            tag_id: tag.id
-                        });
+                        await sql`
+                            INSERT INTO video_tags (video_id, tag_id)
+                            VALUES (${videoDbId}, ${tag.id})
+                            ON CONFLICT DO NOTHING
+                        `;
                     }
                 }
 
-                // Mark complete
-                await supabase.from('videos').update({ status: 'completed' }).eq('id', videoDbId);
+                await sql`UPDATE videos SET status = 'completed' WHERE id = ${videoDbId}`;
                 results.processed++;
 
             } catch (videoError) {
@@ -214,17 +175,12 @@ export async function GET(request: NextRequest) {
     } catch (error) {
         console.error('[Cron] Fatal error:', error);
         return NextResponse.json(
-            {
-                success: false,
-                error: String(error),
-                results
-            },
+            { success: false, error: String(error), results },
             { status: 500 }
         );
     }
 }
 
-// Also support POST for webhook compatibility
 export async function POST(request: NextRequest) {
     return GET(request);
 }

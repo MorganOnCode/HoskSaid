@@ -1,0 +1,13 @@
+[Unit]
+Description=HoskSaid daily ingest timer
+Requires=hosksaid-ingest.service
+
+[Timer]
+# 04:00 UTC every day (chosen as a low-traffic window; tweak as needed).
+OnCalendar=*-*-* 04:00:00
+# If the host was down at the scheduled time, run as soon as it comes back.
+Persistent=true
+Unit=hosksaid-ingest.service
+
+[Install]
+WantedBy=timers.target

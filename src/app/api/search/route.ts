@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createBrowserClient, searchVideos } from '@/lib/supabase';
+import { searchVideos } from '@/lib/db';
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
@@ -16,8 +16,7 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const supabase = createBrowserClient();
-        const videos = await searchVideos(supabase, query, { limit, offset });
+        const videos = await searchVideos(query, { limit, offset });
 
         return NextResponse.json({
             videos,

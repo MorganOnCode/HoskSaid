@@ -32,6 +32,12 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# runtime state — Docker named volumes are managed by Docker, but if anyone
+# switches to a bind mount this prevents committing DB files.
+/data/
+/config/
 
 # vercel
 .vercel

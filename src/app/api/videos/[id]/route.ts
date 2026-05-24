@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createBrowserClient, getVideoByYoutubeId } from '@/lib/supabase';
+import { getVideoByYoutubeId } from '@/lib/db';
 
 interface RouteParams {
     params: Promise<{ id: string }>;
@@ -9,8 +9,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params;
 
     try {
-        const supabase = createBrowserClient();
-        const video = await getVideoByYoutubeId(supabase, id);
+        const video = await getVideoByYoutubeId(id);
 
         if (!video) {
             return NextResponse.json(

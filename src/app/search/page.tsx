@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { hybridSearch } from "@/lib/search-server";
-import { type VideoWithDetails } from "@/lib/supabase";
+import { type VideoWithDetails } from "@/lib/db";
 import { Metadata } from "next";
 
 interface PageProps {

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createBrowserClient, getVideos, type VideoWithDetails } from "@/lib/supabase";
+import { getVideos, type VideoWithDetails } from "@/lib/db";
 
 export const revalidate = 300;
 
@@ -10,8 +10,7 @@ export const metadata = {
 
 async function getAllVideos(): Promise<VideoWithDetails[]> {
     try {
-        const supabase = createBrowserClient();
-        return await getVideos(supabase, { limit: 100 });
+        return await getVideos({ limit: 100 });
     } catch (error) {
         console.error("Failed to fetch videos:", error);
         return [];

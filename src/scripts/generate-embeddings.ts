@@ -1,21 +1,17 @@
-import { createClient } from '@supabase/supabase-js';
-import { config } from 'dotenv';
-import { generateEmbedding } from '../lib/llm';
+#!/usr/bin/env npx tsx
+/**
+ * Generate pgvector embeddings for any videos that don't yet have
+ * transcript_chunks rows. Reads transcripts.cleaned_text (falling back
+ * to raw_text), splits into ~1000-char chunks with overlap, embeds each
+ * chunk via OpenAI, and writes to transcript_chunks.
+ */
 
+import { config } from 'dotenv';
 config({ path: '.env.local' });
 
-// Initialize Supabase
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+import { sql, toVectorLiteral } from '../lib/db';
+import { generateEmbedding } from '../lib/llm';
 
-if (!supabaseUrl || !supabaseServiceKey) {
-    console.error('❌ Missing Supabase environment variables');
-    process.exit(1);
-}
-
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-// Chunking Configuration
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 100;
 
@@ -27,26 +23,20 @@ function getArg(name: string): string | null {
 function splitText(text: string): string[] {
     const chunks: string[] = [];
     if (!text) return chunks;
-
-    // Normalize
     const normalized = text.replace(/\s+/g, ' ').trim();
 
     let start = 0;
     while (start < normalized.length) {
         let end = start + CHUNK_SIZE;
-
-        // Try to find a sentence boundary near the end if possible
         if (end < normalized.length) {
             const boundary = normalized.slice(start, end + 50).lastIndexOf('.');
             if (boundary > CHUNK_SIZE * 0.8) {
                 end = start + boundary + 1;
             }
         }
-
         chunks.push(normalized.slice(start, end).trim());
-        start = end - CHUNK_OVERLAP; // Move forward with overlap
+        start = end - CHUNK_OVERLAP;
     }
-
     return chunks;
 }
 
@@ -56,90 +46,68 @@ async function generateEmbeddings() {
 
     console.log(`🧠 Generating Semantic Embeddings (Limit: ${limit})...`);
 
-    // 1. Get all videos that have transcripts
-    let query = supabase
-        .from('videos')
-        .select(`
-            id,
-            title,
-            transcript:transcripts(id, cleaned_text, raw_text)
-        `)
-        .eq('status', 'completed');
+    const videos = await sql<{
+        id: string;
+        title: string;
+        cleaned_text: string | null;
+        raw_text: string | null;
+    }[]>`
+        SELECT v.id,
+               v.title,
+               t.cleaned_text,
+               t.raw_text
+        FROM videos v
+        JOIN transcripts t ON t.video_id = v.id
+        WHERE v.status = 'completed'
+          ${videoIdArg ? sql`AND v.id = ${videoIdArg}` : sql``}
+          AND NOT EXISTS (
+              SELECT 1 FROM transcript_chunks tc WHERE tc.video_id = v.id
+          )
+        ORDER BY v.published_at DESC NULLS LAST
+        LIMIT ${limit}
+    `;
 
-    if (videoIdArg) {
-        query = query.eq('id', videoIdArg);
-    }
-
-    // We fetch a batch. Note: Filtering by "transcripts exist" implicitly happens by the join structure if using !inner,
-    // but here we just iterate.
-    const { data: videos, error } = await query.limit(limit);
-
-    if (error) {
-        console.error('❌ Error fetching videos:', error);
-        return;
-    }
-
-    console.log(`Found ${videos?.length || 0} videos to check/process.`);
+    console.log(`Found ${videos.length} videos to check/process.`);
     let processedCount = 0;
 
-    for (const video of videos || []) {
-        // Check if chunks already exist
-        const { count } = await supabase
-            .from('transcript_chunks')
-            .select('id', { count: 'exact', head: true })
-            .eq('video_id', video.id);
-
-        if (count && count > 0) {
-            // Already processed
-            continue;
-        }
-
-        // Needs embeddings
-        const transcript = video.transcript;
-        // @ts-ignore
-        const textToChunk = transcript?.cleaned_text || transcript?.raw_text;
-
+    for (const video of videos) {
+        const textToChunk = video.cleaned_text || video.raw_text;
         if (!textToChunk) {
             console.log(`   ⚠️  No text found for video: ${video.title}`);
             continue;
         }
 
         console.log(`   🎬 Processing: ${video.title} (${textToChunk.length} chars)`);
-
         const chunks = splitText(textToChunk);
         console.log(`      Generated ${chunks.length} chunks.`);
 
-        const chunkRecords = [];
-
+        let chunkSuccess = 0;
         for (const chunkContent of chunks) {
             try {
                 const embedding = await generateEmbedding(chunkContent);
-                chunkRecords.push({
-                    video_id: video.id,
-                    content: chunkContent,
-                    embedding: embedding
-                });
-
-                // Rate limit slightly? OpenAI is fast.
+                const vectorLit = toVectorLiteral(embedding);
+                await sql`
+                    INSERT INTO transcript_chunks (video_id, content, embedding)
+                    VALUES (${video.id}, ${chunkContent}, ${vectorLit}::vector)
+                `;
+                chunkSuccess++;
             } catch (e) {
                 console.error('      Embedding failed:', e);
             }
         }
 
-        if (chunkRecords.length > 0) {
-            const { error: insertError } = await supabase
-                .from('transcript_chunks')
-                .insert(chunkRecords);
-
-            if (insertError) console.error('      Failed to insert chunks:', insertError);
-            else {
-                processedCount++;
-                console.log('      ✅ Chunks saved.');
-            }
+        if (chunkSuccess > 0) {
+            processedCount++;
+            console.log(`      ✅ ${chunkSuccess}/${chunks.length} chunks saved.`);
         }
     }
 
     console.log(`\n✅ Finished embedding generation. New videos processed: ${processedCount}`);
+    await sql.end({ timeout: 5 });
 }
 
-generateEmbeddings();
+generateEmbeddings().catch(async (e) => {
+    console.error('Fatal error:', e);
+    await sql.end({ timeout: 5 });
+    process.exit(1);
+});

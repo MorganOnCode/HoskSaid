@@ -1,13 +1,12 @@
 import Link from "next/link";
-import { createBrowserClient, getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/supabase";
+import { getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/db";
 
 // Revalidate every 5 minutes
 export const revalidate = 300;
 
 async function getLatestVideos(): Promise<VideoWithDetails[]> {
   try {
-    const supabase = createBrowserClient();
-    return await getVideos(supabase, { limit: 12 });
+    return await getVideos({ limit: 12 });
   } catch (error) {
     console.error("Failed to fetch videos:", error);
     return [];
@@ -16,8 +15,7 @@ async function getLatestVideos(): Promise<VideoWithDetails[]> {
 
 async function getTags(): Promise<Tag[]> {
   try {
-    const supabase = createBrowserClient();
-    return await getAllTags(supabase);
+    return await getAllTags();
   } catch (error) {
     console.error("Failed to fetch tags:", error);
     return [];

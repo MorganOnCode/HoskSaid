@@ -1,25 +1,23 @@
-import { createClient } from '@supabase/supabase-js';
-import { config } from 'dotenv';
-import { processTranscript } from '../lib/llm';
+#!/usr/bin/env npx tsx
+/**
+ * Enrichment script: re-runs the LLM on transcripts that still lack a
+ * summary, generating bullet-point summary + tags and backfilling tags.
+ *
+ *   npx tsx src/scripts/enrich.ts --limit=10
+ *   npx tsx src/scripts/enrich.ts --video=<uuid>
+ *   npx tsx src/scripts/enrich.ts --force --limit=5
+ */
 
-// Load environment variables from .env.local
+import { config } from 'dotenv';
 config({ path: '.env.local' });
+
+import { sql } from '../lib/db';
+import { processTranscript } from '../lib/llm';
 
 function getArg(name: string): string | null {
     const arg = process.argv.find(a => a.startsWith(`--${name}=`));
     return arg ? arg.split('=')[1] : null;
 }
-
-// Initialize Supabase (Admin Client)
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseUrl || !supabaseServiceKey) {
-    console.error('❌ Missing Supabase environment variables');
-    process.exit(1);
-}
-
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 async function enrichVideos() {
     const limit = parseInt(getArg('limit') || '10', 10);
@@ -29,52 +27,26 @@ async function enrichVideos() {
     console.log('🧠 HoskSaid Enrichment Script');
     console.log('-----------------------------');
 
-    // Build Query
-    let query = supabase
-        .from('videos')
-        .select(`
-            id, 
-            title, 
-            transcript:transcripts(raw_text, summary, cleaned_text)
-        `)
-        .eq('status', 'completed');
+    const transcripts = await sql<{
+        video_id: string;
+        raw_text: string | null;
+        title: string;
+    }[]>`
+        SELECT t.video_id,
+               t.raw_text,
+               v.title
+        FROM transcripts t
+        JOIN videos v ON v.id = t.video_id
+        WHERE v.status = 'completed'
+          ${videoIdArg ? sql`AND t.video_id = ${videoIdArg}` : sql``}
+          ${forceUpdate ? sql`` : sql`AND t.summary IS NULL`}
+        ORDER BY v.published_at DESC NULLS LAST
+        LIMIT ${limit}
+    `;
 
-    if (videoIdArg) {
-        query = query.eq('id', videoIdArg);
-    } else if (!forceUpdate) {
-        // Only get videos where summary is missing/empty
-        // Note: Supabase/Postgrest checks related table filters differently, 
-        // so we'll fetch a batch and filter in code or use !inner join.
-        // For simplicity and to avoid complex inner join syntax issues with missing relations,
-        // we will fetch batch and filter in JS.
-    }
-
-    // We fetch a larger batch to filter in memory efficiently since we can't easily query "Where transcript.summary IS NULL" 
-    // without an explicit foreign key filter or flattening the table structure.
-    // Actually, we can use the !inner hint to filter.
-    // .not('transcript.summary', 'is', null) would filter KEEPING ones with summary.
-    // We want ones WITHOUT summary.
-    // Let's just iterate through the library and look for gaps.
-
-    // Better approach: Query transcripts table directly where summary is null
-    const { data: transcripts, error } = await supabase
-        .from('transcripts')
-        .select(`
-            video_id,
-            raw_text,
-            summary,
-            video:videos(title)
-        `)
-        .is('summary', null)
-        .limit(limit);
-
-    if (error) {
-        console.error('❌ Failed to fetch pending transcripts:', error);
-        return;
-    }
-
-    if (!transcripts || transcripts.length === 0) {
+    if (transcripts.length === 0) {
         console.log('✅ No videos found needing enrichment.');
+        await sql.end({ timeout: 5 });
         return;
     }
 
@@ -84,8 +56,7 @@ async function enrichVideos() {
     let failCount = 0;
 
     for (const t of transcripts) {
-        // @ts-ignore - Supabase join types can be loose
-        const title = t.video?.title || 'Unknown Title';
+        const title = t.title || 'Unknown Title';
         const videoId = t.video_id;
 
         console.log(`🎬 Enriching: ${title.slice(0, 50)}...`);
@@ -99,58 +70,49 @@ async function enrichVideos() {
         try {
             console.log('   🤖 Processing with LLM...');
             const start = Date.now();
-
             const processed = await processTranscript(t.raw_text);
             const duration = ((Date.now() - start) / 1000).toFixed(1);
-
             console.log(`   ✅ Processed in ${duration}s. Summary: ${processed.summary.length} chars. Tags: ${processed.tags.join(', ')}`);
 
-            // Update Transcript
-            const { error: updateError } = await supabase
-                .from('transcripts')
-                .update({
-                    cleaned_text: processed.cleanedText,
-                    summary: processed.summary
-                })
-                .eq('video_id', videoId);
+            await sql`
+                UPDATE transcripts
+                SET cleaned_text = ${processed.cleanedText},
+                    summary      = ${processed.summary}
+                WHERE video_id = ${videoId}
+            `;
 
-            if (updateError) throw updateError;
-
-            // Update Tags
-            if (processed.tags.length > 0) {
-                for (const tagName of processed.tags) {
-                    // Get/Create tag
-                    const { data: tagData } = await supabase
-                        .from('tags')
-                        .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
-                        .select()
-                        .single();
-
-                    if (tagData) {
-                        // Link tag to video
-                        await supabase
-                            .from('video_tags')
-                            .upsert({
-                                video_id: videoId,
-                                tag_id: tagData.id
-                            }, { onConflict: 'video_id,tag_id' });
-                    }
+            for (const tagName of processed.tags) {
+                const [tag] = await sql<{ id: string }[]>`
+                    INSERT INTO tags (name) VALUES (${tagName.toLowerCase()})
+                    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                    RETURNING id
+                `;
+                if (tag) {
+                    await sql`
+                        INSERT INTO video_tags (video_id, tag_id)
+                        VALUES (${videoId}, ${tag.id})
+                        ON CONFLICT DO NOTHING
+                    `;
                 }
             }
 
             successCount++;
-
         } catch (err) {
             console.error(`   ❌ Failed:`, err);
             failCount++;
         }
-
         console.log('-----------------------------');
     }
 
     console.log(`\n📊 Enrichment Summary:`);
     console.log(`   ✅ Success: ${successCount}`);
     console.log(`   ❌ Failed: ${failCount}`);
+
+    await sql.end({ timeout: 5 });
 }
 
-enrichVideos();
+enrichVideos().catch(async (e) => {
+    console.error('Fatal error:', e);
+    await sql.end({ timeout: 5 });
+    process.exit(1);
+});
