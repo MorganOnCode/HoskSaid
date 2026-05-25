@@ -20,7 +20,12 @@ export const runtime = 'nodejs';
 
 function verifyCronSecret(request: NextRequest): boolean {
     const secret = process.env.CRON_SECRET;
-    if (!secret) return true; // Dev mode: no secret configured.
+    if (!secret) {
+        // In production a missing secret means the route is wide open —
+        // refuse. Only the dev workflow gets the unauth fallback.
+        if (process.env.NODE_ENV === 'production') return false;
+        return true;
+    }
     const headerSecret = request.headers.get('x-cron-secret');
     const querySecret = request.nextUrl.searchParams.get('secret');
     return headerSecret === secret || querySecret === secret;

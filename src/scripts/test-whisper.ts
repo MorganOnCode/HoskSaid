@@ -1,6 +1,6 @@
 import { transcribeWithWhisper } from '../lib/whisper';
 import { config } from 'dotenv';
-config({ path: '.env.local' });
+config(); // reads .env
 
 async function test() {
     const videoId = 'VZiqLsch6Vs'; // Short video: RIP Rob Reiner (~3m)

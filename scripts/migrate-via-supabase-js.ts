@@ -16,14 +16,14 @@
  */
 
 import { config } from 'dotenv';
-config({ path: '.env.local' });
+config(); // reads .env
 
 import { sql, toVectorLiteral } from '../src/lib/db';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 if (!SUPABASE_URL || !SERVICE_KEY) {
-    console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local');
+    console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env');
     process.exit(1);
 }
 
@@ -153,19 +153,36 @@ async function main() {
     // array of numbers (newer pgvector versions) or as the pgvector text
     // literal '[0.1,0.2,...]'. Handle both; cast to ::vector in SQL.
     for (const c of chunks as Record<string, unknown>[]) {
-        let embeddingLit = '[]';
         const e = c.embedding;
-        if (Array.isArray(e)) embeddingLit = toVectorLiteral(e as number[]);
-        else if (typeof e === 'string') embeddingLit = e;
-        await sql`
-            INSERT INTO transcript_chunks (id, video_id, content, start_time, end_time, embedding, created_at)
-            VALUES (${c.id as string}, ${(c.video_id as string) ?? null},
-                    ${c.content as string},
-                    ${(c.start_time as number) ?? null},
-                    ${(c.end_time as number) ?? null},
-                    ${embeddingLit}::vector,
-                    ${(c.created_at as string) ?? null})
-        `;
+        // pgvector wants either a literal cast or NULL — never '[]'::vector,
+        // which fails the dimensionality check for vector(1536).
+        let embeddingLit: string | null = null;
+        if (Array.isArray(e) && (e as number[]).length > 0) {
+            embeddingLit = toVectorLiteral(e as number[]);
+        } else if (typeof e === 'string' && e.length > 2) {
+            embeddingLit = e;
+        }
+        if (embeddingLit === null) {
+            await sql`
+                INSERT INTO transcript_chunks (id, video_id, content, start_time, end_time, embedding, created_at)
+                VALUES (${c.id as string}, ${(c.video_id as string) ?? null},
+                        ${c.content as string},
+                        ${(c.start_time as number) ?? null},
+                        ${(c.end_time as number) ?? null},
+                        NULL,
+                        ${(c.created_at as string) ?? null})
+            `;
+        } else {
+            await sql`
+                INSERT INTO transcript_chunks (id, video_id, content, start_time, end_time, embedding, created_at)
+                VALUES (${c.id as string}, ${(c.video_id as string) ?? null},
+                        ${c.content as string},
+                        ${(c.start_time as number) ?? null},
+                        ${(c.end_time as number) ?? null},
+                        ${embeddingLit}::vector,
+                        ${(c.created_at as string) ?? null})
+            `;
+        }
     }
     console.log(`  transcript_chunks: ${chunks.length}`);
 

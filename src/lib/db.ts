@@ -35,7 +35,7 @@ function buildSql(): ReturnType<typeof postgres> {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
         throw new Error(
-            "DATABASE_URL is not set. Configure it via docker-compose or .env.local."
+            "DATABASE_URL is not set. Configure it via docker-compose or .env."
         );
     }
     return postgres(connectionString, {

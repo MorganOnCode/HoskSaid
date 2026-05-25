@@ -24,6 +24,12 @@ FROM node:20-alpine AS runtime
 
 WORKDIR /app
 
+# yt-dlp + ffmpeg are required by src/lib/whisper.ts, which is the
+# fallback path for videos whose YouTube auto-captions are missing.
+# Without these, ingest silently fails on caption-less videos and the
+# `failed` status piles up. Cost: ~80MB image growth.
+RUN apk add --no-cache yt-dlp ffmpeg
+
 RUN addgroup -g 1001 -S app && adduser -S -u 1001 -G app app
 
 # Next standalone output bundles only the runtime deps the app traces. This

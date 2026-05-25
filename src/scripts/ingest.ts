@@ -9,8 +9,7 @@
  */
 
 import { config } from 'dotenv';
-config({ path: '.env.local' });
-// Compose also injects DATABASE_URL via env, so the file is optional.
+config(); // reads .env; compose injects env directly in containers, where no .env exists
 
 import { sql } from '../lib/db';
 import { getChannel, getChannelVideos, getVideo, parseDuration } from '../lib/youtube';

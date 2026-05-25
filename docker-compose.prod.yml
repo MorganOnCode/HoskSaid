@@ -14,9 +14,12 @@ services:
     image: pgvector/pgvector:pg16
     container_name: hosksaid-postgres
     restart: unless-stopped
-    # NOT exposed to host — only the app container can reach it via the
-    # internal compose network. If you ever need psql from the host, use
-    # `docker compose exec postgres psql -U hosksaid`.
+    # Bound to host loopback only (127.0.0.1:5432). This lets the operator
+    # run scripts from the VPS shell (DATABASE_URL=postgres://...@localhost:5432)
+    # and tunnel from a laptop via `ssh -L 5432:127.0.0.1:5432 vps`. Never
+    # reachable from the public internet or other hosts on the LAN.
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hosksaid}
       POSTGRES_USER: ${POSTGRES_USER:-hosksaid}
@@ -82,9 +85,13 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  # One-shot ingestion runner. Not started by `up`; invoked on the systemd
-  # timer with `docker compose run --rm scheduler <script>`.
-  # Built from the same image so it shares node_modules + compiled src.
+  # Manual ingestion runner. NOT auto-scheduled: YouTube blocks this VPS's
+  # datacenter IP for transcript fetching (verified — youtube-transcript
+  # returns NULL, yt-dlp hits the bot check), so ingestion runs from a
+  # residential IP instead (see MIGRATION_RUNBOOK.md → "Ingestion").
+  # This service is kept only for the case where you wire a residential
+  # proxy / YouTube cookies into the image, after which it could be put
+  # back on a timer. Invoke manually: `docker compose --profile scheduler run --rm scheduler`.
   scheduler:
     image: hosksaid:latest
     container_name: hosksaid-scheduler

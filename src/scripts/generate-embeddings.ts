@@ -7,7 +7,7 @@
  */
 
 import { config } from 'dotenv';
-config({ path: '.env.local' });
+config(); // reads .env
 
 import { sql, toVectorLiteral } from '../lib/db';
 import { generateEmbedding } from '../lib/llm';

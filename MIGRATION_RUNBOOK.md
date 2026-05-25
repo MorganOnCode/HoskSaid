@@ -1,91 +1,98 @@
-# HoskSaid migration runbook
+# HoskSaid runbook
 
-Self-hosted on this VPS, replacing Vercel + Supabase.
+Self-hosted on a VPS, replacing Vercel + Supabase. Migration is complete and
+the site is live at https://thehosksaid.com.
 
-## Stack at a glance
+## Architecture
+
+The VPS **serves** the site and **hosts** the database. It does **not** run
+ingestion — YouTube blocks the VPS's datacenter IP for both the caption API
+(`youtube-transcript`) and `yt-dlp`. Ingestion runs from a **residential IP
+(your laptop)** against the VPS Postgres over an SSH tunnel.
 
 | Layer | Where | How to reach |
 | --- | --- | --- |
-| Next.js app (`hosksaid-web`) | docker compose, bound to `127.0.0.1:3001` | `curl http://127.0.0.1:3001/` |
-| Postgres + pgvector (`hosksaid-postgres`) | docker compose, internal network only | `docker compose -f docker-compose.prod.yml exec postgres psql -U hosksaid` |
-| Public DNS | Cloudflare tunnel `f54b9704-…dfda44` | `thehosksaid.com` → `http://localhost:3001` *(pending DNS, see below)* |
-| Daily ingest | systemd `hosksaid-ingest.timer` (04:00 UTC) | `journalctl -u hosksaid-ingest -f` |
+| Next.js app (`hosksaid-web`) | docker compose, `127.0.0.1:3001` | `curl http://127.0.0.1:3001/` |
+| Postgres + pgvector (`hosksaid-postgres`) | docker compose, `127.0.0.1:5432` (loopback) | `docker compose -f docker-compose.prod.yml exec postgres psql -U hosksaid` |
+| Public DNS/TLS | Cloudflare tunnel `f54b9704-…dfda44` | https://thehosksaid.com + www |
+| Ingestion | **your laptop** (residential IP) | see "Ingestion" below |
 
-## Day-to-day
+## Operating the server (on the VPS)
 
 ```bash
 cd /opt/hosksaid
-
-# Bring up / restart the stack
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml restart web
-
-# Logs
-docker compose -f docker-compose.prod.yml logs -f web
-docker compose -f docker-compose.prod.yml logs -f postgres
-
-# Run the pipeline by hand (channel ID + limit are optional)
-docker compose -f docker-compose.prod.yml --profile scheduler run --rm scheduler
-
-# Or a single step
-docker compose -f docker-compose.prod.yml --profile scheduler run --rm scheduler \
-  npx tsx src/scripts/ingest.ts --channel=UCiJiqEvUZxT6isIaXK7RXTg --limit=10
+docker compose -f docker-compose.prod.yml up -d            # start stack
+docker compose -f docker-compose.prod.yml restart web      # restart app
+docker compose -f docker-compose.prod.yml logs -f web      # app logs
+docker compose -f docker-compose.prod.yml ps               # health
 ```
 
-## Remaining manual steps (in order)
+## Ingestion (from your laptop — the only place it works)
 
-1. **Add API keys to `.env`** (`OPENAI_API_KEY`, `YOUTUBE_API_KEY`). Without these
-   the scheduler and `/api/cron/ingest` fail.
+YouTube blocks the VPS IP, so run the pipeline from your laptop's residential
+connection, writing into the VPS database through an SSH tunnel.
 
-2. **Migrate Supabase data**
+1. **Open a tunnel** to the VPS Postgres (leave this terminal open):
    ```bash
-   SUPABASE_DB_URL="postgresql://postgres:<pw>@db.<project-ref>.supabase.co:5432/postgres" \
-     ./scripts/migrate-from-supabase.sh
+   ssh -L 5432:127.0.0.1:5432 morganic@<vps-ip>
    ```
-   The connection string is the *direct* one from
-   Supabase Dashboard → Project Settings → Database → Connection string. If
-   the VPS has no IPv6, switch to the pooler in "Session" mode (port 5432).
-
-3. **Activate the daily timer**
+2. **In your local HoskSaid checkout**, ensure `.env` has:
+   ```
+   DATABASE_URL=postgres://hosksaid:<POSTGRES_PASSWORD>@localhost:5432/hosksaid
+   OPENAI_API_KEY=...
+   YOUTUBE_API_KEY=...
+   DEFAULT_CHANNEL_ID=UCiJiqEvUZxT6isIaXK7RXTg
+   ```
+   (`<POSTGRES_PASSWORD>` is the value from the VPS `/opt/hosksaid/.env`.)
+3. **Run the scripts** exactly as before:
    ```bash
-   sudo systemctl enable --now hosksaid-ingest.timer
-   systemctl list-timers hosksaid-ingest.timer
+   npm run ingest -- --channel=UCiJiqEvUZxT6isIaXK7RXTg --limit=20
+   npm run enrich -- --limit=50
+   npm run generate-embeddings -- --limit=50
    ```
+   `yt-dlp` + `ffmpeg` must be installed locally for the Whisper fallback on
+   caption-less videos (`brew install yt-dlp ffmpeg`).
 
-4. **Public DNS for `thehosksaid.com`**
-   *Pre-req:* the domain must be added as a zone on the Cloudflare account that
-   owns this tunnel's `cert.pem` (the cardano402 account). Add via dashboard,
-   change nameservers at the registrar, wait for "Active" status, then:
-   ```bash
-   cloudflared tunnel route dns f54b9704-3347-47a2-8a45-975721dfda44 thehosksaid.com
-   cloudflared tunnel route dns f54b9704-3347-47a2-8a45-975721dfda44 www.thehosksaid.com
-   ```
-   Then delete the stray `thehosksaid.com.cardano402.com` CNAME that was
-   created on the first attempt (Cloudflare dashboard → DNS for cardano402.com).
+To automate, add a `cron`/`launchd` job on the laptop that opens the tunnel
+(`ssh -fNL ...`) then runs the three scripts. Kept manual by default.
 
-5. **Decommission Supabase**: once `/api/videos` and `/search` look correct via
-   the public URL, cancel the Supabase paid sub.
+## Why not automate on the VPS?
 
-## File map (new + changed)
+Tested 2026-05: 4/4 known-captioned videos returned NULL via `youtube-transcript`
+from the VPS, and `yt-dlp` got "Sign in to confirm you're not a bot." A VPS-side
+timer would just pile up `failed` rows. If you ever want VPS-side automation,
+wire a residential proxy or a YouTube cookies file into `src/lib/transcript.ts`
+and `src/lib/whisper.ts`, then re-add a systemd timer invoking the compose
+`scheduler` profile.
+
+## Data migration (already done; re-runnable)
+
+`scripts/migrate-via-supabase-js.ts` pulls every row from Supabase via PostgREST
+(IPv4, no SDK) and reloads local Postgres. Idempotent (truncates first). Needs
+`NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` + `DATABASE_URL` in env.
+`scripts/parity-check.ts` verifies row counts match Supabase.
+
+## File map
 
 ```
-docker-compose.prod.yml          # postgres + web + scheduler (profile)
-Dockerfile                       # multi-stage Next standalone
-docker/init-db.sql               # schema + pgvector + RPC function
+docker-compose.prod.yml          # postgres + web + scheduler (manual profile)
+Dockerfile                       # multi-stage Next standalone (+ yt-dlp/ffmpeg)
+docker/init-db.sql               # schema + pgvector + match_transcript_chunks
 .env.example                     # template; copy to .env
-src/lib/db.ts                    # NEW — replaces src/lib/supabase.ts (deleted)
-src/lib/search-server.ts         # rewritten against db.ts
-src/scripts/{ingest,enrich,generate-embeddings}.ts  # rewritten
-src/app/api/cron/ingest/route.ts # rewritten
-systemd/hosksaid-ingest.{service,timer}             # installed to /etc/systemd/system
-scripts/migrate-from-supabase.sh # one-shot Supabase → local dump+restore
-scripts/smoke-test.ts            # exercises every db.ts helper end-to-end
+src/lib/db.ts                    # Postgres adapter (replaced src/lib/supabase.ts)
+src/lib/search-server.ts         # semantic/tag/hybrid search on db.ts
+src/scripts/{ingest,enrich,generate-embeddings}.ts  # rewritten for Postgres
+src/app/api/cron/ingest/route.ts # manual trigger (also IP-blocked on VPS)
+scripts/migrate-via-supabase-js.ts # Supabase → local migration (PostgREST)
+scripts/parity-check.ts          # row-count + embedding parity vs Supabase
+scripts/smoke-test.ts            # exercises every db.ts helper
+scripts/migrate-from-supabase.sh # pg_dump variant (needs IPv6 to Supabase)
 ```
 
-## Rollback (cardano402 stays untouched throughout)
+## Rollback (cardano402 untouched throughout)
 
 ```bash
 sudo cp /etc/cloudflared/config.yml.bak-pre-hosksaid /etc/cloudflared/config.yml
 sudo systemctl restart cloudflared
-docker compose -f docker-compose.prod.yml down -v   # nukes the postgres volume too
+docker compose -f docker-compose.prod.yml down -v   # also drops the DB volume
 ```

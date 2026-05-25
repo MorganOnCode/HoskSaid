@@ -9,7 +9,7 @@
  */
 
 import { config } from 'dotenv';
-config({ path: '.env.local' });
+config(); // reads .env
 
 import { sql } from '../lib/db';
 import { processTranscript } from '../lib/llm';
