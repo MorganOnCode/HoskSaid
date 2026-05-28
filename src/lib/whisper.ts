@@ -6,98 +6,128 @@ import { getClient } from './llm';
 import { TranscriptResult, TranscriptSegment } from './transcript';
 
 /**
- * Download audio from YouTube and transcribe it using OpenAI Whisper
- * This is a fallback method when standard captions are unavailable.
- * Requires 'yt-dlp' and 'ffmpeg' to be installed on the system.
+ * Download audio from YouTube and transcribe it with OpenAI Whisper.
+ * Fallback for when standard captions are unavailable.
+ * Requires `yt-dlp` and `ffmpeg` on PATH.
+ *
+ * OpenAI's Whisper API caps uploads at 25MB. Long videos (multi-hour AMAs)
+ * blow past that, so we always re-encode to mono 16kHz (Whisper's native
+ * rate — no quality loss for speech, ~4x smaller) and split into fixed-length
+ * chunks, transcribe each, and stitch the text + timestamps back together.
  */
+
+const WHISPER_LIMIT_MB = 24;   // API hard cap is 25MB; stay under it.
+const CHUNK_SECONDS = 600;     // 10-min mono 16kHz @48k ≈ 3.6MB/chunk.
+
 export async function transcribeWithWhisper(videoId: string): Promise<TranscriptResult | null> {
     const tempDir = os.tmpdir();
-    const outputTemplate = path.join(tempDir, `hosksaid_${videoId}.%(ext)s`);
-    // Ideally we want mp3 or m4a. Whisper supports m4a, mp3, webm, mp4, mpga, wav, mpeg.
-    // yt-dlp -x extracts audio. --audio-format mp3 ensures compatibility.
+    const base = path.join(tempDir, `hosksaid_${videoId}`);
+    const sourceMp3 = `${base}.mp3`;
+    const chunkPrefix = `hosksaid_${videoId}_chunk_`;
+    const createdChunks: string[] = [];
+
+    const cleanup = () => {
+        for (const f of createdChunks) { try { fs.existsSync(f) && fs.unlinkSync(f); } catch { /* ignore */ } }
+        try { fs.existsSync(sourceMp3) && fs.unlinkSync(sourceMp3); } catch { /* ignore */ }
+    };
 
     console.log(`🎙️ [Whisper] Downloading audio for ${videoId}...`);
 
     try {
-        // Check if yt-dlp is available
-        try {
-            execSync('yt-dlp --version', { stdio: 'ignore' });
-        } catch (e) {
-            console.error('❌ yt-dlp is not installed or not found in PATH.');
+        // Tool checks.
+        try { execSync('yt-dlp --version', { stdio: 'ignore' }); }
+        catch { console.error('❌ yt-dlp is not installed or not found in PATH.'); return null; }
+        try { execSync('ffmpeg -version', { stdio: 'ignore' }); }
+        catch { console.error('❌ ffmpeg is not installed or not found in PATH.'); return null; }
+
+        // Download + extract audio to mp3.
+        execSync(
+            `yt-dlp -x --audio-format mp3 --audio-quality 5 -o "${base}.%(ext)s" https://www.youtube.com/watch?v=${videoId}`,
+            { stdio: 'inherit' }
+        );
+        if (!fs.existsSync(sourceMp3)) {
+            console.error(`❌ Failed to find downloaded audio file: ${sourceMp3}`);
+            return null;
+        }
+        const sizeMB = fs.statSync(sourceMp3).size / (1024 * 1024);
+        console.log(`🎙️ [Whisper] Audio downloaded (${sizeMB.toFixed(2)} MB). Re-encoding + chunking...`);
+
+        // Re-encode to mono 16kHz @48k and split into CHUNK_SECONDS segments.
+        // One ffmpeg pass does both; output files are base_chunk_000.mp3, etc.
+        execSync(
+            `ffmpeg -hide_banner -loglevel error -i "${sourceMp3}" ` +
+            `-ac 1 -ar 16000 -c:a libmp3lame -b:a 48k ` +
+            `-f segment -segment_time ${CHUNK_SECONDS} "${base}_chunk_%03d.mp3"`,
+            { stdio: 'inherit' }
+        );
+
+        // Collect the chunk files in order.
+        const chunks = fs.readdirSync(tempDir)
+            .filter(f => f.startsWith(chunkPrefix) && f.endsWith('.mp3'))
+            .sort()
+            .map(f => path.join(tempDir, f));
+        createdChunks.push(...chunks);
+
+        if (chunks.length === 0) {
+            console.error('❌ [Whisper] ffmpeg produced no audio chunks.');
+            cleanup();
             return null;
         }
 
-        // Download audio
-        // -x: extract audio
-        // --audio-format mp3: convert to mp3
-        // --audio-quality 5: medium quality (sufficient for speech, saves size)
-        // -o: output template
-        execSync(`yt-dlp -x --audio-format mp3 --audio-quality 5 -o "${outputTemplate}" https://www.youtube.com/watch?v=${videoId}`, {
-            stdio: 'inherit'
-        });
-
-        // Find the generated file (outputTemplate has %(ext)s, so the file will end in .mp3)
-        const expectedFile = path.join(tempDir, `hosksaid_${videoId}.mp3`);
-
-        if (!fs.existsSync(expectedFile)) {
-            console.error(`❌ Failed to find downloaded audio file: ${expectedFile}`);
-            return null;
-        }
-
-        const stats = fs.statSync(expectedFile);
-        const fileSizeInMB = stats.size / (1024 * 1024);
-        console.log(`🎙️ [Whisper] Audio downloaded (${fileSizeInMB.toFixed(2)} MB). Transcribing...`);
-
-        // OpenAI Whisper API limit is 25MB.
-        // If larger, we technically need to split it. For now, let's just error if too big 
-        // to avoid complex splitting logic in MVP, or rely on compression quality=9 to keep it small.
-        // With quality=5, 10 mins is ~5-10MB. 40 mins might hit the limit.
-        if (fileSizeInMB > 24) {
-            console.warn(`⚠️ Audio file is too large for Whisper API (${fileSizeInMB.toFixed(2)}MB > 25MB). Skipping.`);
-            // Cleanup
-            fs.unlinkSync(expectedFile);
-            return null;
-        }
-
+        console.log(`🎙️ [Whisper] Transcribing ${chunks.length} chunk(s)...`);
         const client = getClient();
 
-        const response = await client.audio.transcriptions.create({
-            file: fs.createReadStream(expectedFile),
-            model: 'whisper-1',
-            response_format: 'verbose_json',
-            timestamp_granularities: ['segment']
-        });
+        const allSegments: TranscriptSegment[] = [];
+        const textParts: string[] = [];
+        let offsetMs = 0;   // running offset so timestamps stay continuous across chunks
 
-        // Parse response
-        // The response with verbose_json includes 'segments' array
-        const manualSegments: TranscriptSegment[] = (response.segments || []).map((seg: any) => ({
-            text: seg.text.trim(),
-            offset: Math.round(seg.start * 1000),
-            duration: Math.round((seg.end - seg.start) * 1000)
-        }));
+        for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            const chunkMB = fs.statSync(chunk).size / (1024 * 1024);
+            if (chunkMB > WHISPER_LIMIT_MB) {
+                // Shouldn't happen at 48k mono, but guard anyway.
+                console.warn(`   ⚠️ chunk ${i + 1} is ${chunkMB.toFixed(1)}MB (>limit) — skipping.`);
+                offsetMs += CHUNK_SECONDS * 1000;
+                continue;
+            }
 
-        const fullText = response.text || manualSegments.map(s => s.text).join(' ');
+            const resp = await client.audio.transcriptions.create({
+                file: fs.createReadStream(chunk),
+                model: 'whisper-1',
+                response_format: 'verbose_json',
+                timestamp_granularities: ['segment'],
+            });
 
-        // Cleanup
-        fs.unlinkSync(expectedFile);
+            for (const seg of ((resp.segments || []) as Array<{ text: string; start: number; end: number }>)) {
+                allSegments.push({
+                    text: seg.text.trim(),
+                    offset: Math.round(seg.start * 1000) + offsetMs,
+                    duration: Math.round((seg.end - seg.start) * 1000),
+                });
+            }
+            if (resp.text) textParts.push(resp.text.trim());
 
-        console.log(`✅ [Whisper] Transcription complete (${fullText.length} chars).`);
+            // Advance the offset by this chunk's real duration (verbose_json
+            // includes it); fall back to the nominal chunk length.
+            const dur = (resp as unknown as { duration?: number }).duration;
+            offsetMs += Math.round((dur ?? CHUNK_SECONDS) * 1000);
+            console.log(`   ✅ chunk ${i + 1}/${chunks.length} transcribed`);
+        }
 
-        return {
-            text: fullText,
-            segments: manualSegments,
-            source: 'whisper'
-        };
+        cleanup();
+
+        const fullText = textParts.join(' ').trim() || allSegments.map(s => s.text).join(' ');
+        if (!fullText) {
+            console.error('❌ [Whisper] No transcript text produced.');
+            return null;
+        }
+
+        console.log(`✅ [Whisper] Transcription complete (${fullText.length} chars across ${chunks.length} chunk(s)).`);
+        return { text: fullText, segments: allSegments, source: 'whisper' };
 
     } catch (error) {
         console.error(`❌ [Whisper] Error processing video ${videoId}:`, error);
-
-        // Try to cleanup if file exists
-        const expectedFile = path.join(tempDir, `hosksaid_${videoId}.mp3`);
-        if (fs.existsSync(expectedFile)) {
-            fs.unlinkSync(expectedFile);
-        }
-
+        cleanup();
         return null;
     }
 }
