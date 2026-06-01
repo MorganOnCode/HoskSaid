@@ -1,0 +1,16 @@
+# hosksaid nightly Postgres backup (restic → Cloudflare R2)
+#
+# Install:
+#   sudo cp /opt/hosksaid/scripts/hosksaid-backup.cron /etc/cron.d/hosksaid-backup
+#   sudo chmod 644 /etc/cron.d/hosksaid-backup
+#
+# Logs: /opt/hosksaid/data/backup.log
+# Verify restores periodically:  restic snapshots   (with .backup.env sourced)
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Nightly at 04:00 UTC. Offset from cardano402 (03:00) and tubechat (03:30)
+# so the three nightly jobs never overlap on disk/network I/O.
+0 4 * * * morganic /opt/hosksaid/scripts/backup.sh >> /opt/hosksaid/data/backup.log 2>&1

@@ -49,3 +49,7 @@ next-env.d.ts
 
 #Ignore cursor AI rules
 .cursor/rules/codacy.mdc
+
+# backup secrets + local backup staging
+.backup.env
+backups/
