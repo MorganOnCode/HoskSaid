@@ -1,0 +1,104 @@
+{
+  "$comment": "Illustrative MCP server manifest for thehosksaid.com. Adapt to the discovery format your runtime expects; the canonical contract is the live MCP handshake at the endpoint below.",
+  "name": "thehosksaid",
+  "description": "Retrieval over an independent, AI-generated transcript index of Charles Hoskinson's public videos (talks, AMAs, whiteboards). Synthesized, citation-backed answers grounded in timestamped transcript segments.",
+  "version": "0.1.0",
+  "homepage": "https://thehosksaid.com/agents",
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://thehosksaid.com/mcp"
+  },
+  "authentication": {
+    "required": false,
+    "scheme": "bearer",
+    "header": "Authorization",
+    "note": "Anonymous access is read-only and rate-limited (60 req/min/IP). Send 'Authorization: Bearer <key>' for 600 req/min."
+  },
+  "tools": [
+    {
+      "name": "search_archive",
+      "description": "Synthesized, citation-backed answer to a natural-language question. The flagship retrieval tool.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Natural-language question." },
+          "filters": {
+            "type": "object",
+            "properties": {
+              "date_from": { "type": "string", "format": "date" },
+              "date_to": { "type": "string", "format": "date" },
+              "video_ids": { "type": "array", "items": { "type": "string" } },
+              "topics": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "with_citations": { "type": "boolean", "default": true }
+        }
+      }
+    },
+    {
+      "name": "search_segments",
+      "description": "Raw semantic search over every transcript segment, ranked by relevance.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "default": 10, "maximum": 50 },
+          "video_id": { "type": "string" },
+          "date_from": { "type": "string", "format": "date" },
+          "date_to": { "type": "string", "format": "date" }
+        }
+      }
+    },
+    {
+      "name": "get_video",
+      "description": "Full metadata, chapters and topics for a single indexed video.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["video_id"],
+        "properties": { "video_id": { "type": "string" } }
+      }
+    },
+    {
+      "name": "get_transcript",
+      "description": "The complete transcript of a video as segments, plain text, or WebVTT.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["video_id"],
+        "properties": {
+          "video_id": { "type": "string" },
+          "format": { "type": "string", "enum": ["segments", "text", "vtt"], "default": "segments" }
+        }
+      }
+    },
+    {
+      "name": "get_segment",
+      "description": "A single timestamped segment with its neighbours and a deep link to the moment.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["segment_id"],
+        "properties": { "segment_id": { "type": "string" } }
+      }
+    },
+    {
+      "name": "list_videos",
+      "description": "Paginated catalogue of all indexed videos.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["AMA", "Whiteboard", "Fireside", "Keynote", "Interview"] },
+          "topic": { "type": "string" },
+          "sort": { "type": "string", "enum": ["recent", "cited", "viewed", "longest"], "default": "recent" },
+          "cursor": { "type": "string" },
+          "limit": { "type": "integer", "default": 20, "maximum": 100 }
+        }
+      }
+    },
+    {
+      "name": "list_topics",
+      "description": "Every clustered topic with citation, video and segment counts.",
+      "inputSchema": { "type": "object", "properties": {} }
+    }
+  ]
+}

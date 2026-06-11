@@ -53,3 +53,6 @@ next-env.d.ts
 # backup secrets + local backup staging
 .backup.env
 backups/
+
+# temp handoff docs (not for the repo)
+/.tmp/

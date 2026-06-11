@@ -1,119 +1,57 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Newsreader, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import Link from "next/link";
+import { SiteHeader } from "@/components/SiteHeader";
+import { SiteFooter } from "@/components/SiteFooter";
 
-const inter = Inter({
-  variable: "--font-geist-sans",
+const display = Newsreader({
   subsets: ["latin"],
+  style: ["normal", "italic"],
+  weight: ["400", "500"],
+  variable: "--font-display",
+  display: "swap",
+});
+const ui = Hanken_Grotesk({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-ui",
+  display: "swap",
+});
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-mono",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "HoskSaid - Charles Hoskinson Transcript Library",
-  description: "Search and explore transcripts from Charles Hoskinson's YouTube videos. A research tool for the Cardano community.",
-  keywords: ["Charles Hoskinson", "Cardano", "transcripts", "blockchain", "cryptocurrency", "research"],
+  metadataBase: new URL("https://thehosksaid.com"),
+  title: {
+    default: "thehosksaid — Ask the archive of Charles Hoskinson's videos",
+    template: "%s — thehosksaid",
+  },
+  description:
+    "An independent, AI-generated transcript index of Charles Hoskinson's public videos. Ask a question and get a synthesized, citation-backed answer drawn from timestamped transcripts.",
+  keywords: ["Charles Hoskinson", "Cardano", "transcripts", "AMA", "governance", "research"],
   openGraph: {
-    title: "HoskSaid - Charles Hoskinson Transcript Library",
-    description: "Search and explore transcripts from Charles Hoskinson's YouTube videos.",
+    title: "thehosksaid — Ask the archive",
+    description: "Synthesized, citation-backed answers from timestamped transcripts of Charles Hoskinson's public videos.",
     type: "website",
+    url: "https://thehosksaid.com",
   },
 };
 
-function Header() {
-  return (
-    <header className="fixed top-0 left-0 right-0 z-50 glass">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--color-accent)] to-[var(--color-primary)] flex items-center justify-center">
-              <span className="text-white font-bold text-sm">H</span>
-            </div>
-            <span className="font-semibold text-lg">
-              Hosk<span className="text-[var(--color-accent)]">Said</span>
-            </span>
-          </Link>
+// Applied before hydration so there is no flash of the wrong theme.
+const themeScript = `(function(){try{var e=document.documentElement;var t=localStorage.getItem('hosk.theme');e.classList.add(t==='light'?'theme-light':'theme-dark');if(localStorage.getItem('hosk.density')==='compact')e.classList.add('density-compact');}catch(_){document.documentElement.classList.add('theme-dark');}})();`;
 
-          {/* Navigation */}
-          <nav className="flex items-center gap-6">
-            <Link
-              href="/videos"
-              className="text-sm text-[var(--foreground-muted)] hover:text-[var(--foreground)] transition-colors"
-            >
-              Videos
-            </Link>
-            <Link
-              href="/search"
-              className="text-sm text-[var(--foreground-muted)] hover:text-[var(--foreground)] transition-colors"
-            >
-              Search
-            </Link>
-            <Link
-              href="/search"
-              className="flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--background-tertiary)] border border-[var(--border)] text-sm text-[var(--foreground-muted)] hover:border-[var(--color-primary)] transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <span className="hidden sm:inline">Quick Search</span>
-            </Link>
-          </nav>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function Footer() {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <footer className="border-t border-[var(--border)] mt-20">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[var(--color-accent)] to-[var(--color-primary)] flex items-center justify-center">
-              <span className="text-white font-bold text-xs">H</span>
-            </div>
-            <span className="text-sm text-[var(--foreground-muted)]">
-              HoskSaid — A community research tool
-            </span>
-          </div>
-          <div className="flex items-center gap-6 text-sm text-[var(--foreground-muted)]">
-            <a
-              href="https://www.youtube.com/@charleshoskinson"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[var(--color-accent)] transition-colors"
-            >
-              Charles Hoskinson YouTube
-            </a>
-            <a
-              href="https://cardano.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[var(--color-accent)] transition-colors"
-            >
-              Cardano.org
-            </a>
-          </div>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html lang="en">
-      <body className={`${inter.variable} antialiased min-h-screen`}>
-        <Header />
-        <main className="pt-16">
-          {children}
-        </main>
-        <Footer />
+    <html lang="en" suppressHydrationWarning>
+      <body className={`${display.variable} ${ui.variable} ${mono.variable}`}>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <SiteHeader />
+        <main>{children}</main>
+        <SiteFooter />
       </body>
     </html>
   );

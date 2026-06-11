@@ -96,9 +96,20 @@ export interface Video {
     duration_seconds?: number;
     thumbnail_url?: string;
     view_count?: number;
+    // Content taxonomy: AMA | Whiteboard | Fireside | Keynote | Interview
+    video_type?: string | null;
+    // Derived chapters [{ t_seconds, title }]
+    chapters?: { t_seconds: number; title: string }[] | null;
     status: "pending" | "processing" | "completed" | "failed";
     created_at: string;
     updated_at: string;
+}
+
+/** A timed caption cue as stored in transcripts.segments. */
+export interface TimedSegment {
+    text: string;
+    offset: number; // ms
+    duration: number; // ms
 }
 
 export interface Transcript {
@@ -107,7 +118,8 @@ export interface Transcript {
     raw_text?: string;
     cleaned_text?: string;
     summary?: string;
-    source?: "youtube_captions" | "extractor" | "whisper";
+    segments?: TimedSegment[] | null;
+    source?: "youtube_captions" | "extractor" | "whisper" | "yt-dlp";
     processing_status: "pending" | "processing" | "completed" | "failed";
     error_message?: string;
     created_at: string;
@@ -136,6 +148,16 @@ export interface ErrorReport {
     created_at: string;
 }
 
+/** A retrieval result row from match_transcript_chunks(). */
+export interface SemanticChunk {
+    id: string;
+    video_id: string;
+    content: string;
+    start_time: number | null;
+    end_time: number | null;
+    similarity: number;
+}
+
 // ---------------------------------------------------------------------------
 // pgvector helpers
 // ---------------------------------------------------------------------------
@@ -144,6 +166,23 @@ export interface ErrorReport {
 export function toVectorLiteral(arr: number[]): string {
     // pgvector wire format: '[1.0,2.0,...]'. Cast in SQL with ::vector.
     return pgvector.toSql(arr);
+}
+
+/**
+ * Semantic search over transcript_chunks via the match_transcript_chunks RPC.
+ * Returns chunks above `matchThreshold` cosine similarity, with their start/end
+ * timestamps (seconds) so callers can build deep-links and citations.
+ */
+export async function matchTranscriptChunks(
+    embedding: number[],
+    matchThreshold: number,
+    matchCount: number
+): Promise<SemanticChunk[]> {
+    if (!embedding.length) return [];
+    const vec = toVectorLiteral(embedding);
+    return await sql<SemanticChunk[]>`
+        SELECT * FROM match_transcript_chunks(${vec}::vector, ${matchThreshold}, ${matchCount})
+    `;
 }
 
 // ---------------------------------------------------------------------------

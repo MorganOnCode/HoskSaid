@@ -1,0 +1,120 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "thehosksaid REST API",
+    "version": "0.1.0",
+    "description": "REST fallback for the thehosksaid transcript archive. Agents should prefer the MCP server at https://thehosksaid.com/mcp; these endpoints exist for non-MCP clients. Independent project, not affiliated with IOG, the Cardano Foundation, or Charles Hoskinson.",
+    "license": { "name": "Free for community & research use" }
+  },
+  "servers": [{ "url": "https://thehosksaid.com/api" }],
+  "paths": {
+    "/ask": {
+      "post": {
+        "summary": "Synthesized, citation-backed answer to a natural-language question.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string" },
+                  "filters": {
+                    "type": "object",
+                    "properties": {
+                      "date_from": { "type": "string", "format": "date" },
+                      "date_to": { "type": "string", "format": "date" },
+                      "video_ids": { "type": "array", "items": { "type": "string" } },
+                      "topics": { "type": "array", "items": { "type": "string" } }
+                    }
+                  },
+                  "with_citations": { "type": "boolean", "default": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Answer with citations and sources.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "answer": { "type": "string" },
+                    "citations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "n": { "type": "integer" },
+                          "segment_id": { "type": "string" },
+                          "video_id": { "type": "string" },
+                          "timestamp": { "type": "string" },
+                          "quote": { "type": "string" }
+                        }
+                      }
+                    },
+                    "sources": { "type": "array", "items": { "$ref": "#/components/schemas/Source" } }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "description": "Empty/unanswerable — no transcript segment matched. Returns { matched: 0, suggestions: [] }." },
+          "429": { "description": "Rate limited. Retry-After header set." }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "summary": "Raw semantic search over transcript segments.",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10 } },
+          { "name": "video_id", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Ranked segments." } }
+      }
+    },
+    "/videos": {
+      "get": {
+        "summary": "Paginated video catalogue.",
+        "parameters": [
+          { "name": "type", "in": "query", "schema": { "type": "string" } },
+          { "name": "topic", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["recent", "cited", "viewed", "longest"] } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Video list + next_cursor." } }
+      }
+    },
+    "/videos/{video_id}": {
+      "get": {
+        "summary": "Single video with chapters, topics and transcript link.",
+        "parameters": [{ "name": "video_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Video object." }, "404": { "description": "No such video." } }
+      }
+    },
+    "/topics": {
+      "get": { "summary": "All clustered topics with counts.", "responses": { "200": { "description": "Topic list." } } }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Source": {
+        "type": "object",
+        "properties": {
+          "video_id": { "type": "string" },
+          "title": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "timestamp": { "type": "string" },
+          "cite_count": { "type": "integer" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    }
+  }
+}

@@ -1,37 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { searchVideos } from '@/lib/db';
+import { NextRequest } from "next/server";
+import { searchSegments } from "@/lib/api";
+import { rateLimited } from "@/lib/ratelimit";
 
+export const dynamic = "force-dynamic";
+
+/** GET /api/search?q=&limit=&video_id= → ranked transcript segments. */
 export async function GET(request: NextRequest) {
-    const searchParams = request.nextUrl.searchParams;
-    const query = searchParams.get('q') || '';
-    const limit = parseInt(searchParams.get('limit') || '20', 10);
-    const offset = parseInt(searchParams.get('offset') || '0', 10);
-
-    if (!query.trim()) {
-        return NextResponse.json({
-            videos: [],
-            query: '',
-            pagination: { limit, offset, hasMore: false },
-        });
-    }
-
-    try {
-        const videos = await searchVideos(query, { limit, offset });
-
-        return NextResponse.json({
-            videos,
-            query,
-            pagination: {
-                limit,
-                offset,
-                hasMore: videos.length === limit,
-            },
-        });
-    } catch (error) {
-        console.error('Search API error:', error);
-        return NextResponse.json(
-            { error: 'Search failed' },
-            { status: 500 }
-        );
-    }
+  const limited = rateLimited(request);
+  if (limited) return limited;
+  const sp = request.nextUrl.searchParams;
+  const q = (sp.get("q") || "").trim();
+  if (!q) return Response.json({ items: [] });
+  try {
+    const items = await searchSegments(q, {
+      limit: sp.get("limit") ? parseInt(sp.get("limit")!, 10) : undefined,
+      videoId: sp.get("video_id") || undefined,
+      dateFrom: sp.get("date_from") || undefined,
+      dateTo: sp.get("date_to") || undefined,
+    });
+    return Response.json({ items });
+  } catch (error) {
+    console.error("GET /api/search:", error);
+    return Response.json({ error: "internal" }, { status: 500 });
+  }
 }

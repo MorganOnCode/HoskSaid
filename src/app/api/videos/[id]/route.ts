@@ -1,29 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getVideoByYoutubeId } from '@/lib/db';
+import { NextRequest } from "next/server";
+import { getVideoApi } from "@/lib/api";
+import { rateLimited } from "@/lib/ratelimit";
 
-interface RouteParams {
-    params: Promise<{ id: string }>;
-}
+export const dynamic = "force-dynamic";
 
-export async function GET(request: NextRequest, { params }: RouteParams) {
-    const { id } = await params;
-
-    try {
-        const video = await getVideoByYoutubeId(id);
-
-        if (!video) {
-            return NextResponse.json(
-                { error: 'Video not found' },
-                { status: 404 }
-            );
-        }
-
-        return NextResponse.json(video);
-    } catch (error) {
-        console.error('API error:', error);
-        return NextResponse.json(
-            { error: 'Failed to fetch video' },
-            { status: 500 }
-        );
-    }
+/** GET /api/videos/{id} → the handoff video atom (chapters, topics, counts). */
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
+  const { id } = await params;
+  try {
+    const video = await getVideoApi(id);
+    if (!video) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json(video);
+  } catch (error) {
+    console.error("GET /api/videos/[id]:", error);
+    return Response.json({ error: "internal" }, { status: 500 });
+  }
 }

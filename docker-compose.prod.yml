@@ -65,8 +65,13 @@ services:
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:?YOUTUBE_API_KEY must be set in .env}
       DEFAULT_CHANNEL_ID: ${DEFAULT_CHANNEL_ID:-UCiJiqEvUZxT6isIaXK7RXTg}
       CRON_SECRET: ${CRON_SECRET:?CRON_SECRET must be set in .env}
-      # Pages that hit the DB at request time need ISR/SSG to know we want
-      # a Node runtime, not edge. Next reads this for fetch cache TTL hints.
+      # Public origin used for deep-links, machine files, MCP/REST docs.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://thehosksaid.com}
+      # Rate limits (in-memory token bucket): anon/min, keyed/min.
+      RATE_LIMIT_ANON: ${RATE_LIMIT_ANON:-60}
+      RATE_LIMIT_KEYED: ${RATE_LIMIT_KEYED:-600}
+      # Optional: comma-separated bearer keys that get the keyed tier.
+      HOSK_API_KEYS: ${HOSK_API_KEYS:-}
       NEXT_TELEMETRY_DISABLED: "1"
     depends_on:
       postgres:

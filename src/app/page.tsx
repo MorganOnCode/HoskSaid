@@ -1,207 +1,131 @@
 import Link from "next/link";
-import { getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/db";
+import Image from "next/image";
+import "./home.css";
+import { AskProvider } from "@/components/ask/AskProvider";
+import { AskBox } from "@/components/ask/AskBox";
+import { AnswerShell } from "@/components/ask/AnswerShell";
+import { getLatestVideos, getTopicsWithCounts, getMostCitedVideos, getArchiveStats } from "@/lib/browse";
+import { formatDuration, formatAgo, formatCount } from "@/lib/format";
 
-// Revalidate every 5 minutes
-export const revalidate = 300;
+export const dynamic = "force-dynamic";
 
-async function getLatestVideos(): Promise<VideoWithDetails[]> {
-  try {
-    return await getVideos({ limit: 12 });
-  } catch (error) {
-    console.error("Failed to fetch videos:", error);
-    return [];
-  }
-}
+export default async function HomePage() {
+  const [latest, topics, mostCited, stats] = await Promise.all([
+    getLatestVideos(5).catch(() => []),
+    getTopicsWithCounts(10).catch(() => []),
+    getMostCitedVideos(5).catch(() => []),
+    getArchiveStats().catch(() => ({ videos: 0, hours: 0, words: 0, last_sync: null })),
+  ]);
 
-async function getTags(): Promise<Tag[]> {
-  try {
-    return await getAllTags();
-  } catch (error) {
-    console.error("Failed to fetch tags:", error);
-    return [];
-  }
-}
+  const maxCite = Math.max(1, ...mostCited.map((m) => m.cites));
+  const hero = latest[0];
 
-function formatDate(dateString?: string): string {
-  if (!dateString) return "";
-  return new Date(dateString).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDuration(seconds?: number): string {
-  if (!seconds) return "";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return `${minutes} min`;
-}
-
-function VideoCard({ video }: { video: VideoWithDetails }) {
   return (
-    <Link
-      href={`/videos/${video.youtube_id}`}
-      className="group block rounded-xl overflow-hidden bg-[var(--background-secondary)] border border-[var(--border)] card-hover"
-    >
-      {/* Thumbnail */}
-      <div className="relative aspect-video bg-[var(--background-tertiary)] overflow-hidden">
-        {video.thumbnail_url ? (
-          <img
-            src={video.thumbnail_url}
-            alt={video.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <svg className="w-12 h-12 text-[var(--foreground-muted)]" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        )}
-        {/* Duration badge */}
-        {video.duration_seconds && (
-          <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-black/80 text-xs font-medium">
-            {formatDuration(video.duration_seconds)}
-          </div>
-        )}
-      </div>
+    <div className="wrap">
+      <AskProvider>
+        <section className="hero">
+          <div className="hero-left">
+            <span className="eyebrow">
+              <span className="dot" />
+              {formatCount(stats.videos)} VIDEOS · {formatCount(stats.hours)} HOURS · LIVE INDEX
+            </span>
+            <h1>What did <em>Charles</em> say?</h1>
+            <p className="tagline">Every talk, AMA, and whiteboard — searchable to the moment it was said.</p>
 
-      {/* Content */}
-      <div className="p-4">
-        <h3 className="font-medium text-sm leading-snug line-clamp-2 group-hover:text-[var(--color-accent)] transition-colors">
-          {video.title}
-        </h3>
-        <div className="mt-2 flex items-center gap-2 text-xs text-[var(--foreground-muted)]">
-          <span>{formatDate(video.published_at)}</span>
-          {video.view_count && (
-            <>
-              <span>•</span>
-              <span>{video.view_count.toLocaleString()} views</span>
-            </>
+            <AskBox videoCount={stats.videos} />
+
+            <Link className="agent-cue" href="/agents">
+              Building with agents? Connect the archive over MCP <span className="arr">→</span>
+            </Link>
+          </div>
+
+          {hero && (
+            <figure className="hero-media">
+              <Link className="hm-frame" href={`/video/${hero.youtube_id}`}>
+                <Image src="/images/hero/hero.png" alt={hero.title} width={800} height={600} priority />
+                <span className="hm-tag"><span className="dot" />LATEST</span>
+                <span className="hm-cap">
+                  <span className="t">{hero.title}</span>
+                  <span className="m">
+                    <span>{hero.segment_count} segments</span><span>·</span>
+                    <span>{formatAgo(hero.published_at)}</span>
+                  </span>
+                </span>
+              </Link>
+            </figure>
           )}
-        </div>
-        {/* Tags */}
-        {video.tags && video.tags.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1">
-            {video.tags.slice(0, 3).map((tag) => (
-              <span key={tag.id} className="tag text-[10px] py-1 px-2">
-                {tag.name}
-              </span>
-            ))}
+        </section>
+
+        <AnswerShell />
+      </AskProvider>
+
+      <div className="cols">
+        <section>
+          <div className="sec-head">
+            <h2>Latest <em>videos</em></h2>
+            <span className="ln" />
+            <span className="more">{stats.last_sync ? `UPDATED ${formatAgo(stats.last_sync).toUpperCase()}` : ""}</span>
           </div>
-        )}
-      </div>
-    </Link>
-  );
-}
-
-function HeroSection() {
-  return (
-    <section className="relative py-24 overflow-hidden">
-      {/* Background gradient */}
-      <div className="absolute inset-0 bg-gradient-to-b from-[var(--color-primary)]/10 to-transparent pointer-events-none" />
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[var(--color-accent)]/5 rounded-full blur-3xl pointer-events-none" />
-
-      <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight">
-          What did{" "}
-          <span className="gradient-text">Charles</span>
-          {" "}say?
-        </h1>
-        <p className="mt-6 text-lg sm:text-xl text-[var(--foreground-muted)] max-w-2xl mx-auto">
-          Search and explore transcripts from Charles Hoskinson&apos;s YouTube videos.
-          A research tool for the Cardano community.
-        </p>
-
-        {/* Search bar */}
-        <form action="/search" method="GET" className="mt-10 max-w-xl mx-auto">
-          <div className="relative">
-            <input
-              type="text"
-              name="q"
-              placeholder="Search transcripts..."
-              className="w-full h-14 pl-5 pr-14 rounded-full bg-[var(--background-secondary)] border border-[var(--border)] text-[var(--foreground)] placeholder:text-[var(--foreground-muted)] focus:border-[var(--color-primary)] transition-colors"
-            />
-            <button
-              type="submit"
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-primary-light)] text-white hover:opacity-90 transition-opacity"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </button>
-          </div>
-        </form>
-
-        {/* Quick stats placeholder */}
-        <div className="mt-10 flex items-center justify-center gap-8 text-sm text-[var(--foreground-muted)]">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse" />
-            <span>Auto-updating library</span>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export default async function Home() {
-  const [videos, tags] = await Promise.all([getLatestVideos(), getTags()]);
-
-  return (
-    <div>
-      <HeroSection />
-
-      {/* Latest Videos */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex items-center justify-between mb-8">
-          <h2 className="text-2xl font-semibold">Latest Videos</h2>
-          <Link
-            href="/videos"
-            className="text-sm text-[var(--color-accent)] hover:underline"
-          >
-            View all →
-          </Link>
-        </div>
-
-        {videos.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {videos.map((video) => (
-              <VideoCard key={video.id} video={video} />
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-20 text-[var(--foreground-muted)]">
-            <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-            <p className="text-lg font-medium">No videos yet</p>
-            <p className="mt-2">Run the ingestion script to populate the library</p>
-          </div>
-        )}
-      </section>
-
-      {/* Browse by Topic */}
-      {tags.length > 0 && (
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-          <h2 className="text-2xl font-semibold mb-8">Browse by Topic</h2>
-          <div className="flex flex-wrap gap-3">
-            {tags.slice(0, 30).map((tag) => (
-              <Link
-                key={tag.id}
-                href={`/search?q=${encodeURIComponent(tag.name)}`}
-                className="tag"
-              >
-                {tag.name}
+          <div className="vid-list">
+            {latest.map((v) => (
+              <Link className="vid-row" key={v.youtube_id} href={`/video/${v.youtube_id}`}>
+                <div className="thumb">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`https://i.ytimg.com/vi/${v.youtube_id}/mqdefault.jpg`} alt="" loading="lazy" />
+                  <span className="dur">{formatDuration(v.duration_seconds)}</span>
+                </div>
+                <div>
+                  <div className="vid-title">{v.title}</div>
+                  <div className="vid-meta">
+                    <span className="seg">{v.segment_count} segments</span><span>·</span>
+                    <span>{formatAgo(v.published_at)}</span>
+                    {v.view_count ? <><span>·</span><span>{formatCount(v.view_count)} views</span></> : null}
+                  </div>
+                </div>
+                <span className="vid-go">OPEN →</span>
               </Link>
             ))}
           </div>
         </section>
-      )}
+
+        <aside className="aside">
+          <div className="panel">
+            <div className="panel-hd"><span className="t">Most cited</span><span className="m">BY ANSWERS</span></div>
+            {mostCited.map((m, i) => (
+              <Link className={"rank-row" + (i < 2 ? " hot" : "")} key={m.youtube_id} href={`/video/${m.youtube_id}`}>
+                <span className="rank-num">{i + 1}</span>
+                <div className="rank-body">
+                  <div className="rank-title">{m.title}</div>
+                  <div className="rank-bar"><span style={{ width: `${Math.round((m.cites / maxCite) * 100)}%` }} /></div>
+                </div>
+                <div className="rank-meta"><span className="rank-ct">{formatCount(m.cites)}</span></div>
+              </Link>
+            ))}
+          </div>
+
+          <div className="panel">
+            <div className="panel-hd"><span className="t">Browse by topic</span><span className="m">{topics.length} TOPICS</span></div>
+            <div className="topic-wrap">
+              {topics.map((t) => (
+                <Link
+                  className={"topic" + (t.citation_count > 0 || t.video_count > 10 ? " hot" : "")}
+                  key={t.slug}
+                  href={`/topics?t=${t.slug}`}
+                >
+                  {t.name} <span className="ct">{t.citation_count || t.video_count}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          <div className="stat-grid">
+            <div className="stat"><span className="n">{formatCount(stats.videos)}</span><span className="l">videos indexed</span></div>
+            <div className="stat"><span className="n">{formatCount(stats.hours)}<em>h</em></span><span className="l">of transcripts</span></div>
+            <div className="stat"><span className="n">{formatCount(stats.words)}</span><span className="l">words searchable</span></div>
+            <div className="stat"><span className="n">{stats.last_sync ? formatAgo(stats.last_sync) : "—"}</span><span className="l">since last sync</span></div>
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }

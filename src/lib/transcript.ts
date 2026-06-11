@@ -1,4 +1,7 @@
-import { YoutubeTranscript } from 'youtube-transcript';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 export interface TranscriptSegment {
     text: string;
@@ -8,39 +11,132 @@ export interface TranscriptSegment {
 
 export interface TranscriptResult {
     text: string;
+    // Timed caption cues. Persisted to transcripts.segments so generate-embeddings
+    // can produce TIMED transcript_chunks (start/end seconds) for deep-links.
     segments: TranscriptSegment[];
-    source: 'youtube_captions' | 'extractor' | 'whisper';
+    source: 'youtube_captions' | 'extractor' | 'whisper' | 'yt-dlp';
 }
 
 /**
- * Fetch transcript for a YouTube video
- * Uses youtube-transcript package which extracts from YouTube's caption system
+ * Fetch transcript for a YouTube video.
+ *
+ * Primary path is yt-dlp json3 auto-subs (reliable from a residential IP and the
+ * only path that preserves per-cue timing). Falls back to the youtube-transcript
+ * package. The whisper audio fallback lives in the caller (ingest.ts) for the
+ * caption-less videos. Both paths return TIMED segments.
  */
 export async function fetchTranscript(videoId: string): Promise<TranscriptResult | null> {
-    try {
-        const segments = await YoutubeTranscript.fetchTranscript(videoId);
+    // Try yt-dlp first (most reliable, works from residential IPs, keeps timing).
+    const ytdlpResult = await fetchTranscriptYtDlp(videoId);
+    if (ytdlpResult) return ytdlpResult;
 
-        if (!segments || segments.length === 0) {
+    // Fallback: the youtube-transcript package (still timed).
+    try {
+        const { YoutubeTranscript } = await import('youtube-transcript');
+        const segments = await YoutubeTranscript.fetchTranscript(videoId);
+        if (segments && segments.length > 0) {
+            const transcriptSegments: TranscriptSegment[] = segments.map(
+                (seg: { text: string; offset: number; duration: number }) => ({
+                    text: seg.text,
+                    offset: Math.round(seg.offset),
+                    duration: Math.round(seg.duration),
+                })
+            );
+            const fullText = transcriptSegments.map((s) => s.text).join(' ');
+            return { text: fullText, segments: transcriptSegments, source: 'extractor' };
+        }
+    } catch (error) {
+        console.error(`youtube-transcript fallback failed for ${videoId}:`, error);
+    }
+
+    return null;
+}
+
+/**
+ * Extract auto-generated captions with yt-dlp.
+ * Downloads only the subtitle file in json3 format (no audio/video), then parses
+ * its events into timed segments {text, offset(ms), duration(ms)}.
+ */
+async function fetchTranscriptYtDlp(videoId: string): Promise<TranscriptResult | null> {
+    const tempDir = os.tmpdir();
+    const outputBase = path.join(tempDir, `hosksaid_${videoId}`);
+
+    try {
+        // Is yt-dlp available?
+        try {
+            execSync('yt-dlp --version', { stdio: 'ignore' });
+        } catch {
+            console.log(`[Transcript] yt-dlp not available, skipping`);
             return null;
         }
 
-        // Convert to our format
-        const transcriptSegments: TranscriptSegment[] = segments.map((seg) => ({
-            text: seg.text,
-            offset: Math.round(seg.offset),
-            duration: Math.round(seg.duration),
-        }));
+        console.log(`[Transcript] Fetching captions via yt-dlp for ${videoId}...`);
 
-        // Combine all segments into full text
-        const fullText = transcriptSegments.map((s) => s.text).join(' ');
+        // Optional browser cookies to pass YouTube's bot check (set
+        // YTDLP_COOKIES_FROM_BROWSER=safari|chrome|brave|firefox in .env).
+        const cookies = process.env.YTDLP_COOKIES_FROM_BROWSER
+            ? ` --cookies-from-browser ${process.env.YTDLP_COOKIES_FROM_BROWSER}`
+            : '';
+        // YouTube's n-challenge needs the EJS solver script + a JS runtime (deno).
+        const ytdlpArgs = `${cookies} --remote-components ejs:github`;
 
-        return {
-            text: fullText,
-            segments: transcriptSegments,
-            source: 'extractor',
-        };
+        execSync(
+            `yt-dlp${ytdlpArgs} --write-auto-sub --sub-lang "en,en-orig" --sub-format json3 --skip-download --no-warnings -o "${outputBase}" "https://www.youtube.com/watch?v=${videoId}"`,
+            { stdio: 'pipe', timeout: 120000 }
+        );
+
+        // Find the downloaded subtitle file.
+        let subtitleFile: string | null = null;
+        for (const f of [`${outputBase}.en.json3`, `${outputBase}.en-orig.json3`]) {
+            if (fs.existsSync(f)) { subtitleFile = f; break; }
+        }
+        if (!subtitleFile) {
+            const dir = path.dirname(outputBase);
+            const base = path.basename(outputBase);
+            const files = fs.readdirSync(dir).filter((f) => f.startsWith(base) && f.endsWith('.json3'));
+            if (files.length > 0) subtitleFile = path.join(dir, files[0]);
+        }
+        if (!subtitleFile) {
+            console.log(`[Transcript] No subtitle file found for ${videoId}`);
+            return null;
+        }
+
+        const raw = fs.readFileSync(subtitleFile, 'utf-8');
+        const data = JSON.parse(raw);
+
+        // json3 format: { events: [{ tStartMs, dDurationMs, segs: [{ utf8 }] }] }
+        const events = (data.events || []).filter(
+            (e: { segs?: unknown[] }) => e.segs && e.segs.length > 0
+        );
+        const segments: TranscriptSegment[] = events
+            .map((e: { tStartMs: number; dDurationMs: number; segs: { utf8: string }[] }) => ({
+                text: e.segs.map((s: { utf8: string }) => s.utf8 || '').join('').trim(),
+                offset: e.tStartMs || 0,
+                duration: e.dDurationMs || 0,
+            }))
+            .filter((s: TranscriptSegment) => s.text.length > 0);
+
+        fs.unlinkSync(subtitleFile);
+
+        if (segments.length === 0) {
+            console.log(`[Transcript] Parsed 0 segments for ${videoId}`);
+            return null;
+        }
+
+        const fullText = segments.map((s) => s.text).join(' ').replace(/\s+/g, ' ').trim();
+        console.log(`[Transcript] ✅ Got ${segments.length} segments (${fullText.length} chars) for ${videoId}`);
+
+        return { text: fullText, segments, source: 'yt-dlp' };
     } catch (error) {
-        console.error(`Failed to fetch transcript for ${videoId}:`, error);
+        console.error(`[Transcript] yt-dlp error for ${videoId}:`, error);
+        // Clean up any partial files.
+        try {
+            const dir = path.dirname(outputBase);
+            const base = path.basename(outputBase);
+            fs.readdirSync(dir)
+                .filter((f) => f.startsWith(base))
+                .forEach((f) => fs.unlinkSync(path.join(dir, f)));
+        } catch { /* ignore cleanup errors */ }
         return null;
     }
 }
