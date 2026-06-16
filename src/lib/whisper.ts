@@ -40,9 +40,14 @@ export async function transcribeWithWhisper(videoId: string): Promise<Transcript
         try { execSync('ffmpeg -version', { stdio: 'ignore' }); }
         catch { console.error('❌ ffmpeg is not installed or not found in PATH.'); return null; }
 
-        // Download + extract audio to mp3.
+        // Download + extract audio to mp3. `--match-filter "!is_live"` refuses
+        // in-progress live streams: a live download streams in real time and
+        // never terminates. yt-dlp exits cleanly (0) without writing a file when
+        // the filter rejects, so the existsSync check below turns that into a
+        // graceful null (ingestVideo's API-level guard normally catches these
+        // first; this is the last line of defence for direct --video= calls).
         execSync(
-            `yt-dlp -x --audio-format mp3 --audio-quality 5 -o "${base}.%(ext)s" https://www.youtube.com/watch?v=${videoId}`,
+            `yt-dlp -x --audio-format mp3 --audio-quality 5 --match-filter "!is_live" -o "${base}.%(ext)s" https://www.youtube.com/watch?v=${videoId}`,
             { stdio: 'inherit' }
         );
         if (!fs.existsSync(sourceMp3)) {

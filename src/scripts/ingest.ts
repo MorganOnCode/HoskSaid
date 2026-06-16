@@ -111,6 +111,16 @@ async function ingestVideo(
 
     console.log(`   📝 Title: ${videoInfo.title.slice(0, 60)}...`);
 
+    // A live/upcoming broadcast has no fixed end, so a Whisper download streams
+    // it in real time and never terminates (the trap that hung this script on a
+    // live stream). Skip until it ends and becomes a normal VOD; a later run
+    // will pick it up. Done *before* the INSERT so we don't leave a dangling
+    // 'processing' row behind.
+    if (videoInfo.liveBroadcastContent === 'live' || videoInfo.liveBroadcastContent === 'upcoming') {
+        console.log(`   ⏭️  ${videoInfo.liveBroadcastContent === 'live' ? 'Live' : 'Upcoming'} broadcast — skipping until it ends`);
+        return { skipped: true };
+    }
+
     let videoDbId: string;
     if (existing) {
         videoDbId = existing.id;
