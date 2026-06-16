@@ -12,6 +12,10 @@ export interface YouTubeVideo {
     viewCount: number;
     channelId: string;
     channelTitle: string;
+    // 'live' | 'upcoming' while a broadcast is in progress/scheduled, else 'none'.
+    // Live streams have no fixed end, so a Whisper download of one never
+    // terminates — ingestVideo uses this to skip them until they become VODs.
+    liveBroadcastContent?: 'live' | 'upcoming' | 'none';
 }
 
 export interface YouTubeChannel {
@@ -229,6 +233,7 @@ export async function getVideo(videoId: string): Promise<YouTubeVideo | null> {
         viewCount: parseInt(video.statistics.viewCount || '0', 10),
         channelId: video.snippet.channelId,
         channelTitle: video.snippet.channelTitle,
+        liveBroadcastContent: video.snippet.liveBroadcastContent,
     };
 }
 
