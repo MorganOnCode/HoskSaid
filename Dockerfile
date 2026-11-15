@@ -2,7 +2,7 @@
 # small final image, non-root user, no build tools in the runtime layer.
 
 # ----- Stage 1: deps + build -------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ----- Stage 2: runtime ------------------------------------------------------
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 
 WORKDIR /app
 
