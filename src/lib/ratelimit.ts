@@ -1,5 +1,5 @@
 /**
- * In-memory token-bucket rate limiting + tiny TTL cache. Sufficient for the
+ * In-memory token-bucket rate limiting + tiny TTL cache (server-only). Sufficient for the
  * single-container deploy; swap for Redis if HoskSaid ever scales horizontally.
  *
  * Tiers (match the handoff + /agents docs):
@@ -19,7 +19,7 @@ const BUCKET_IDLE_MS = 5 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
 let lastSweep = 0;
 
-function take(key: string, perMin: number, burst: number, now: number): { ok: boolean; retryAfter: number } {
+function take(key: string, perMin: number, burst: number, now: number, cost = 1): { ok: boolean; retryAfter: number } {
   if (now - lastSweep >= SWEEP_INTERVAL_MS) {
     for (const [id, bucket] of buckets) {
       // Only discard idle buckets once their allowance would be fully refilled.
@@ -39,11 +39,12 @@ function take(key: string, perMin: number, burst: number, now: number): { ok: bo
   const elapsed = Math.max(0, now - b.last) / 1000;
   b.tokens = Math.min(b.capacity, b.tokens + elapsed * b.refillPerSec);
   b.last = now;
-  if (b.tokens >= 1) {
-    b.tokens -= 1;
+  if (cost > b.capacity) return { ok: false, retryAfter: 60 };
+  if (b.tokens >= cost) {
+    b.tokens -= cost;
     return { ok: true, retryAfter: 0 };
   }
-  return { ok: false, retryAfter: Math.ceil((1 - b.tokens) / b.refillPerSec) };
+  return { ok: false, retryAfter: Math.ceil((cost - b.tokens) / b.refillPerSec) };
 }
 
 function clientIp(req: NextRequest): string {
@@ -68,8 +69,12 @@ export interface RateResult {
   body?: unknown;
 }
 
-/** Check a request against its tier. Returns ok, or the error to send. */
-export function checkRate(req: NextRequest): RateResult {
+/**
+ * Check a request against its tier. Returns ok, or the error to send.
+ * `cost` charges several units at once (an MCP batch is charged one unit per
+ * message); a request costing more than the tier's burst is always refused.
+ */
+export function checkRate(req: NextRequest, cost = 1): RateResult {
   const now = Date.now();
   const auth = req.headers.get("authorization");
   const keys = validKeys();
@@ -79,17 +84,17 @@ export function checkRate(req: NextRequest): RateResult {
     if (!key || !keys.has(key)) {
       return { ok: false, status: 401, body: { error: "invalid_key" } };
     }
-    const r = take(`key:${key}`, KEYED_PER_MIN, KEYED_PER_MIN, now);
+    const r = take(`key:${key}`, KEYED_PER_MIN, KEYED_PER_MIN, now, cost);
     return r.ok ? { ok: true } : { ok: false, status: 429, retryAfter: r.retryAfter, body: { error: "rate_limited" } };
   }
 
-  const r = take(`ip:${clientIp(req)}`, ANON_PER_MIN, ANON_PER_MIN * 2, now);
+  const r = take(`ip:${clientIp(req)}`, ANON_PER_MIN, ANON_PER_MIN * 2, now, cost);
   return r.ok ? { ok: true } : { ok: false, status: 429, retryAfter: r.retryAfter, body: { error: "rate_limited" } };
 }
 
 /** Build the throttle/auth Response, or null when the request may proceed. */
-export function rateLimited(req: NextRequest): Response | null {
-  const r = checkRate(req);
+export function rateLimited(req: NextRequest, cost = 1): Response | null {
+  const r = checkRate(req, cost);
   if (r.ok) return null;
   const headers: Record<string, string> = {};
   if (r.retryAfter) headers["Retry-After"] = String(r.retryAfter);
@@ -97,7 +102,8 @@ export function rateLimited(req: NextRequest): Response | null {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny TTL cache (hot Ask queries).
+// Tiny TTL cache (hot site-funded Ask answers only). Never stores answers made
+// with a visitor's provider key or local model, and never any key material.
 // ---------------------------------------------------------------------------
 const cache = new Map<string, { value: unknown; expires: number }>();
 const CACHE_MAX = 500;
@@ -115,4 +121,9 @@ export function cacheSet(key: string, value: unknown, ttlSeconds = 300): void {
     if (oldest) cache.delete(oldest);
   }
   cache.set(key, { value, expires: Date.now() + ttlSeconds * 1000 });
+}
+
+/** Test hook: drop all cached answers. */
+export function cacheClearForTests(): void {
+  cache.clear();
 }

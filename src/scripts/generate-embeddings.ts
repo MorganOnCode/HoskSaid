@@ -7,6 +7,16 @@
  * into ~CHUNK_SIZE windows that carry a start/end (seconds) so every chunk can
  * deep-link to its moment in the video. Falls back to char-windowing the cleaned
  * text (untimed) for videos ingested before segments were captured.
+ *
+ * Bounded and resumable (2026-11 restart):
+ *   --dry-run         count videos/chunks/estimated tokens; makes NO API calls
+ *   --limit=N         at most N videos (default 10)
+ *   --max-chunks=N    stop before embedding more than N chunks in this run (default 2000)
+ *   --video=<uuid>    one video
+ * Each video's chunks are embedded first and written in one transaction, so an
+ * interrupted run never leaves a half-embedded video (which the NOT EXISTS
+ * selection would otherwise skip forever). Re-running resumes where it stopped.
+ * Chunk text is entity-decoded (`&amp;#39;` -> `'`) before embedding.
  */
 
 import { config } from 'dotenv';
@@ -14,6 +24,7 @@ config(); // reads .env
 
 import { sql, toVectorLiteral } from '../lib/db';
 import { generateEmbedding } from '../lib/llm';
+import { decodeEntities } from '../lib/text';
 
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 100;
@@ -39,7 +50,7 @@ interface TimedSegment {
 function splitText(text: string): Chunk[] {
     const chunks: Chunk[] = [];
     if (!text) return chunks;
-    const normalized = text.replace(/\s+/g, ' ').trim();
+    const normalized = decodeEntities(text).replace(/\s+/g, ' ').trim();
 
     let start = 0;
     while (start < normalized.length) {
@@ -75,7 +86,7 @@ function chunkSegments(segments: TimedSegment[]): Chunk[] {
     let start: number | null = null;
     let end = 0;
     for (const seg of segments) {
-        const t = (seg.text || '').replace(/\s+/g, ' ').trim();
+        const t = decodeEntities(seg.text || '').replace(/\s+/g, ' ').trim();
         if (!t) continue;
         if (start === null) start = Math.floor((seg.offset || 0) / 1000);
         text += (text ? ' ' : '') + t;
@@ -92,9 +103,11 @@ function chunkSegments(segments: TimedSegment[]): Chunk[] {
 
 async function generateEmbeddings() {
     const limit = parseInt(getArg('limit') || '10', 10);
+    const maxChunks = parseInt(getArg('max-chunks') || '2000', 10);
+    const dryRun = process.argv.includes('--dry-run');
     const videoIdArg = getArg('video');
 
-    console.log(`🧠 Generating Semantic Embeddings (Limit: ${limit})...`);
+    console.log(`🧠 Generating Semantic Embeddings (videos ≤ ${limit}, chunks ≤ ${maxChunks}${dryRun ? ', DRY RUN — no API calls' : ''})...`);
 
     // Completed videos that have a transcript but no chunks yet.
     const videos = await sql<{
@@ -113,8 +126,11 @@ async function generateEmbeddings() {
         LIMIT ${limit}
     `;
 
-    console.log(`Found ${videos.length} videos to check/process.`);
+    console.log(`Found ${videos.length} videos without chunks.`);
     let processedCount = 0;
+    let chunkBudget = maxChunks;
+    let plannedChunks = 0;
+    let plannedChars = 0;
 
     for (const video of videos) {
         // Prefer timed caption cues (gives each chunk a start/end for deep-links);
@@ -141,33 +157,50 @@ async function generateEmbeddings() {
             }
             chunks = splitText(textToChunk);
         }
+        if (!chunks.length) continue;
+
+        if (chunks.length > chunkBudget) {
+            console.log(`   ⏸  Chunk budget reached (${maxChunks}); stopping before "${video.title}". Re-run to continue.`);
+            break;
+        }
+        chunkBudget -= chunks.length;
+        plannedChunks += chunks.length;
+        plannedChars += chunks.reduce((n, c) => n + c.text.length, 0);
+
+        if (dryRun) {
+            console.log(`   📝 Would embed: ${video.title} (${chunks.length} chunks${segments ? ', timed' : ''})`);
+            continue;
+        }
 
         console.log(
             `   🎬 Processing: ${video.title} (${chunks.length} chunks${segments ? ', timed' : ''})`
         );
 
-        let inserted = 0;
-        for (const chunk of chunks) {
-            try {
+        try {
+            // Embed everything first; write all-or-nothing.
+            const embedded: { chunk: Chunk; vec: string }[] = [];
+            for (const chunk of chunks) {
                 const embedding = await generateEmbedding(chunk.text);
-                if (!embedding.length) continue;
-                await sql`
-                    INSERT INTO transcript_chunks (video_id, content, start_time, end_time, embedding)
-                    VALUES (${video.id}, ${chunk.text}, ${chunk.start}, ${chunk.end}, ${toVectorLiteral(embedding)}::vector)
-                `;
-                inserted++;
-            } catch (e) {
-                console.error('      Embedding failed:', e);
+                if (!embedding.length) throw new Error('empty embedding');
+                embedded.push({ chunk, vec: toVectorLiteral(embedding) });
             }
-        }
-
-        if (inserted > 0) {
+            await sql.begin(async (tx) => {
+                for (const { chunk, vec } of embedded) {
+                    await tx`
+                        INSERT INTO transcript_chunks (video_id, content, start_time, end_time, embedding)
+                        VALUES (${video.id}, ${chunk.text}, ${chunk.start}, ${chunk.end}, ${vec}::vector)
+                    `;
+                }
+            });
             processedCount++;
-            console.log(`      ✅ ${inserted} chunks saved${segments ? ' (timed)' : ''}.`);
+            console.log(`      ✅ ${embedded.length} chunks saved${segments ? ' (timed)' : ''}.`);
+        } catch (e) {
+            console.error('      Embedding failed; nothing written for this video:', e instanceof Error ? e.message : e);
         }
     }
 
-    console.log(`\n✅ Finished embedding generation. New videos processed: ${processedCount}`);
+    const estTokens = Math.ceil(plannedChars / 4);
+    console.log(`\n${dryRun ? '📝 Dry run' : '✅ Finished'}: ${dryRun ? 'would embed' : 'embedded'} ${plannedChunks} chunks (~${estTokens} tokens) across ${dryRun ? 'the listed' : processedCount} videos.`);
     await sql.end({ timeout: 5 });
 }
 

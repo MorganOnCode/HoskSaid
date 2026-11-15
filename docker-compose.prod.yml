@@ -4,8 +4,9 @@
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
 # Pattern matches /opt/cardano402/docker-compose.prod.yml: app bound to
-# 127.0.0.1 only (cloudflared tunnels traffic in), Postgres reachable
-# only on the internal compose network (never exposed to the host or LAN).
+# 127.0.0.1 only (cloudflared tunnels traffic in), Postgres bound to host
+# loopback only (127.0.0.1:5432, for operator scripts and SSH tunnels) and
+# never exposed to the public internet or the LAN.
 
 services:
   postgres:
@@ -72,6 +73,17 @@ services:
       RATE_LIMIT_KEYED: ${RATE_LIMIT_KEYED:-600}
       # Public ingress is exclusively the Cloudflare tunnel; keep port loopback-only.
       TRUST_CLOUDFLARE_IP: "true"
+      # 308 http->https and www->apex using the tunnel's X-Forwarded-Proto/Host.
+      CANONICAL_REDIRECTS: "true"
+      # Daily caps on calls paid with OPENAI_API_KEY (UTC day). Absent => these
+      # defaults; 0 disables that kind of call. Provider-side budget alerts and
+      # hard limits are still required: these are call counts, not dollars.
+      SITE_DAILY_ANSWER_CAP: ${SITE_DAILY_ANSWER_CAP:-200}
+      SITE_DAILY_EMBEDDING_CAP: ${SITE_DAILY_EMBEDDING_CAP:-2000}
+      SITE_MAX_CONCURRENT_CALLS: ${SITE_MAX_CONCURRENT_CALLS:-4}
+      # Store site-model questions/answers in `answers` (see /privacy).
+      PERSIST_ASK_QUESTIONS: ${PERSIST_ASK_QUESTIONS:-true}
+      CONTACT_EMAIL: ${CONTACT_EMAIL:-}
       # Optional: comma-separated bearer keys that get the keyed tier.
       HOSK_API_KEYS: ${HOSK_API_KEYS:-}
       NEXT_TELEMETRY_DISABLED: "1"

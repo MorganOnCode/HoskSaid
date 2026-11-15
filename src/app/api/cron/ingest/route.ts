@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { sql } from '@/lib/db';
 import { getChannelVideos, parseDuration } from '@/lib/youtube';
 import { fetchTranscript } from '@/lib/transcript';
@@ -8,8 +9,9 @@ import { processTranscript } from '@/lib/llm';
  * Cron endpoint for automated video ingestion.
  *
  * Triggers:
- *  - Manual: GET /api/cron/ingest?secret=<CRON_SECRET>
- *  - Webhook: POST /api/cron/ingest (with x-cron-secret header)
+ *  - Manual or webhook: GET|POST /api/cron/ingest with an `x-cron-secret`
+ *    header. The secret is no longer accepted in the query string, where it
+ *    would land in edge/proxy access logs.
  *  - Systemd timer can call this via curl as an alternative to the
  *    `scheduler` compose service; in practice the timer runs the scripts
  *    directly, so this route is mostly for ad-hoc triggers.
@@ -27,8 +29,11 @@ function verifyCronSecret(request: NextRequest): boolean {
         return true;
     }
     const headerSecret = request.headers.get('x-cron-secret');
-    const querySecret = request.nextUrl.searchParams.get('secret');
-    return headerSecret === secret || querySecret === secret;
+    if (!headerSecret) return false;
+    // Compare fixed-length digests in constant time.
+    const a = createHash('sha256').update(headerSecret).digest();
+    const b = createHash('sha256').update(secret).digest();
+    return timingSafeEqual(a, b);
 }
 
 export async function GET(request: NextRequest) {

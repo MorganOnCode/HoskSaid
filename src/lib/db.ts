@@ -17,6 +17,7 @@
 
 import postgres from "postgres";
 import pgvector from "pgvector/utils";
+import { cache } from "react";
 
 // ---------------------------------------------------------------------------
 // Connection
@@ -27,7 +28,6 @@ import pgvector from "pgvector/utils";
 // proxy the postgres client so the first real query is what triggers the
 // connect (and the env check), not `import './db'`.
 declare global {
-    // eslint-disable-next-line no-var
     var __hosksaidPg: ReturnType<typeof postgres> | undefined;
 }
 
@@ -43,6 +43,7 @@ function buildSql(): ReturnType<typeof postgres> {
         idle_timeout: 30,
         connect_timeout: 10,
         prepare: false,             // pgbouncer-friendly + faster cold start
+        onnotice: () => {},         // idempotent DDL notices are noise (and must not reach CLI stdout)
     });
 }
 
@@ -61,7 +62,7 @@ export const sql = new Proxy(
         apply(_target, _thisArg, argArray) {
             // tagged template: sql`SELECT ...`
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            return (getSql() as any).apply(null, argArray);
+            return (getSql() as any)(...argArray);
         },
         get(_target, prop) {
             // method access: sql.end(), sql.json(), sql.begin()
@@ -168,20 +169,41 @@ export function toVectorLiteral(arr: number[]): string {
     return pgvector.toSql(arr);
 }
 
+/** A scoped retrieval row from match_transcript_chunks_scoped(). */
+export interface ScopedChunk extends SemanticChunk {
+    youtube_id: string;
+    title: string;
+    published_at: string | null;
+}
+
+export interface ChunkScope {
+    youtubeIds?: string[] | null;
+    topicSlugs?: string[] | null;
+    from?: Date | null; // inclusive
+    to?: Date | null; // exclusive
+}
+
 /**
- * Semantic search over transcript_chunks via the match_transcript_chunks RPC.
- * Returns chunks above `matchThreshold` cosine similarity, with their start/end
- * timestamps (seconds) so callers can build deep-links and citations.
+ * Exact, scoped semantic search (migration 003). Scope filters are applied in
+ * SQL before ranking and LIMIT, so a video- or date-scoped query ranks only
+ * in-scope chunks. Returns chunks above `matchThreshold` cosine similarity.
  */
-export async function matchTranscriptChunks(
+export async function matchChunksScoped(
     embedding: number[],
     matchThreshold: number,
-    matchCount: number
-): Promise<SemanticChunk[]> {
+    matchCount: number,
+    scope: ChunkScope = {}
+): Promise<ScopedChunk[]> {
     if (!embedding.length) return [];
     const vec = toVectorLiteral(embedding);
-    return await sql<SemanticChunk[]>`
-        SELECT * FROM match_transcript_chunks(${vec}::vector, ${matchThreshold}, ${matchCount})
+    return await sql<ScopedChunk[]>`
+        SELECT * FROM match_transcript_chunks_scoped(
+            ${vec}::vector, ${matchThreshold}, ${matchCount},
+            ${scope.youtubeIds?.length ? scope.youtubeIds : null}::text[],
+            ${scope.from ?? null}::timestamptz,
+            ${scope.to ?? null}::timestamptz,
+            ${scope.topicSlugs?.length ? scope.topicSlugs : null}::text[]
+        )
     `;
 }
 
@@ -256,6 +278,56 @@ export async function getVideoByYoutubeId(
     `;
     return rows[0] ?? null;
 }
+
+/** Everything the /video/[id] page renders, in one query. */
+export interface VideoPageData {
+    id: string;
+    youtube_id: string;
+    title: string;
+    description: string | null;
+    published_at: string | null;
+    duration_seconds: number | null;
+    thumbnail_url: string | null;
+    view_count: number | null;
+    video_type: string | null;
+    chapters: { t_seconds: number; title: string }[] | null;
+    created_at: string;
+    summary: string | null;
+    /** cleaned_text when present, else raw_text. */
+    transcript_text: string | null;
+    /** True only when cleaned_text exists and differs from raw_text. */
+    transcript_cleaned: boolean;
+    tags: { id: string; name: string }[];
+}
+
+/**
+ * Video page data, memoised per request with React cache() so
+ * generateMetadata and the page share one query (the old path fetched the
+ * full transcript row twice per view).
+ */
+export const getVideoPageData = cache(async (youtubeId: string): Promise<VideoPageData | null> => {
+    if (!/^[A-Za-z0-9_-]{6,20}$/.test(youtubeId)) return null;
+    const rows = await sql<VideoPageData[]>`
+        SELECT
+            v.id, v.youtube_id, v.title, v.description, v.published_at, v.duration_seconds,
+            v.thumbnail_url, v.view_count, v.video_type, v.chapters, v.created_at,
+            t.summary,
+            COALESCE(t.cleaned_text, t.raw_text) AS transcript_text,
+            (t.cleaned_text IS NOT NULL AND t.cleaned_text IS DISTINCT FROM t.raw_text) AS transcript_cleaned,
+            COALESCE(
+              (SELECT jsonb_agg(jsonb_build_object('id', tg.id, 'name', tg.name) ORDER BY tg.name)
+                 FROM video_tags vt JOIN tags tg ON tg.id = vt.tag_id
+                WHERE vt.video_id = v.id),
+              '[]'::jsonb
+            ) AS tags
+        FROM videos v
+        LEFT JOIN transcripts t ON t.video_id = v.id
+        WHERE v.youtube_id = ${youtubeId}
+          AND v.status = 'completed'
+        LIMIT 1
+    `;
+    return rows[0] ?? null;
+});
 
 /**
  * Keyword search across video metadata + transcript full-text. Mirrors the

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { Newsreader, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -39,18 +40,23 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://thehosksaid.com",
   },
+  alternates: { canonical: "/" },
 };
 
 // Applied before hydration so there is no flash of the wrong theme.
 const themeScript = `(function(){try{var e=document.documentElement;var t=localStorage.getItem('hosk.theme');e.classList.add(t==='light'?'theme-light':'theme-dark');if(localStorage.getItem('hosk.density')==='compact')e.classList.add('density-compact');}catch(_){document.documentElement.classList.add('theme-dark');}})();`;
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  // Reading the request's CSP nonce makes every page dynamically rendered,
+  // which Next requires to attach the nonce to its own inline scripts.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${display.variable} ${ui.variable} ${mono.variable}`}>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <a className="skip-link" href="#main">Skip to content</a>
         <SiteHeader />
-        <main>{children}</main>
+        <main id="main" tabIndex={-1}>{children}</main>
         <SiteFooter />
       </body>
     </html>

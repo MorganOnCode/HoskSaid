@@ -3,6 +3,7 @@
 import { sql } from "./db";
 import { getArchiveStats } from "./browse";
 import { formatCount } from "./format";
+import { decodeEntities } from "./text";
 
 const BASE = process.env.PUBLIC_BASE_URL || "https://thehosksaid.com";
 
@@ -18,15 +19,15 @@ If you are an AI agent, prefer the structured retrieval interfaces below over sc
 
 ## Retrieval (preferred for agents)
 
-- [MCP server manifest](${BASE}/.well-known/mcp.json): Model Context Protocol server over Streamable HTTP at \`${BASE}/mcp\`. Tools: search_archive, search_segments, get_video, get_transcript, get_segment, list_videos, list_topics. Read-only, no key required (rate-limited).
-- [Ask API](${BASE}/api/ask): POST a JSON body { "query": "...", "filters": {...} } and receive { answer, lede, citations[], sources[] }.
+- [MCP server manifest](${BASE}/.well-known/mcp.json): Model Context Protocol server over Streamable HTTP at \`${BASE}/mcp\`. Tools: search_archive, search_segments, get_video, get_transcript, get_segment, list_videos, list_topics. No key required (rate-limited per message, at most 8 messages per request). Tools never modify the archive; search_archive spends a site-funded model call under a daily cap and stores the question and answer.
+- [Ask API](${BASE}/api/ask): POST a JSON body { "query": "..." (at most 1000 characters), "filters": {...} } and receive { answer, lede, citations[], sources[] }.
 - [OpenAPI spec](${BASE}/api/openapi.json): full schema for the REST fallback endpoints.
 - [Developer & agent guide](${BASE}/agents): human-readable docs, connection snippets, tool reference.
 
 ## Core content
 
-- [Library](${BASE}/library): the full catalogue of indexed videos, filterable by type and topic.
-- [Topics](${BASE}/topics): clustered themes (Governance, Midnight, Hydra, Regulation, …) ranked by citation frequency.
+- [Library](${BASE}/library): the full catalogue, with keyword search over titles, tags and full transcripts.
+- [Topics](${BASE}/topics): curated themes (Governance, Midnight, Hydra, Regulation, …); only themes with assigned videos are listed.
 - [Timeline](${BASE}/timeline): the archive in chronological order.
 - [Ask](${BASE}/): the human question-answering interface.
 
@@ -56,7 +57,7 @@ export async function buildLlmsFullTxt(): Promise<string> {
       .replace(/\s+/g, " ")
       .slice(0, 160)
       .trim();
-    return `- [${r.title}](${BASE}/video/${r.youtube_id})${oneLine ? `: ${oneLine}` : ""}`;
+    return `- [${decodeEntities(r.title)}](${BASE}/video/${r.youtube_id})${oneLine ? `: ${decodeEntities(oneLine)}` : ""}`;
   });
   return `${head}\n## Every indexed video\n\n${lines.join("\n")}\n`;
 }
@@ -65,7 +66,7 @@ export async function buildSitemapXml(): Promise<string> {
   const rows = await sql<{ youtube_id: string; updated_at: string | null }[]>`
     SELECT youtube_id, updated_at FROM videos WHERE status = 'completed' ORDER BY published_at DESC NULLS LAST
   `;
-  const staticPaths = ["", "/library", "/topics", "/timeline", "/agents"];
+  const staticPaths = ["", "/library", "/topics", "/timeline", "/blog", "/agents", "/privacy"];
   const urls = [
     ...staticPaths.map((p) => `  <url><loc>${BASE}${p}</loc></url>`),
     ...rows.map(

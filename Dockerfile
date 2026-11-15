@@ -45,6 +45,8 @@ COPY --from=build --chown=app:app /app/public ./public
 COPY --from=build --chown=app:app /app/src ./src
 COPY --from=build --chown=app:app /app/node_modules ./node_modules
 COPY --chown=app:app package.json tsconfig.json ./
+# Versioned migrations for the operator CLI (`npx tsx src/cli/hosk.ts migrate`).
+COPY --chown=app:app docker/migrations ./docker/migrations
 
 USER app
 

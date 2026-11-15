@@ -3,7 +3,6 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-const TYPES = ["all", "AMA", "Whiteboard", "Fireside", "Keynote", "Interview"];
 const SORTS = [
   { v: "recent", label: "Most recent" },
   { v: "cited", label: "Most cited" },
@@ -11,8 +10,22 @@ const SORTS = [
   { v: "longest", label: "Longest" },
 ];
 
-/** Filter/sort/search toolbar that drives the /library URL (server re-renders). */
-export function LibraryToolbar({ type, sort, q }: { type: string; sort: string; q: string }) {
+/**
+ * Filter/sort/search toolbar that drives the /library URL (server re-renders).
+ * Type pills appear only for types that have videos; until video types are
+ * assigned none are shown rather than five empty filters.
+ */
+export function LibraryToolbar({
+  type,
+  sort,
+  q,
+  types,
+}: {
+  type: string;
+  sort: string;
+  q: string;
+  types: { type: string; count: number }[];
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -45,43 +58,47 @@ export function LibraryToolbar({ type, sort, q }: { type: string; sort: string; 
           <div>
             <span className="eyebrow"><span className="dot" />THE FULL CATALOGUE · FULLY TRANSCRIBED</span>
             <h1>The <em>library</em></h1>
-            <p className="sub">Every talk, AMA, whiteboard and fireside — indexed segment by segment.</p>
+            <p className="sub">Every talk, AMA, whiteboard and fireside, with keyword search across titles, tags and full transcripts.</p>
           </div>
-          <div className="lib-search">
-            <span className="ic">⌕</span>
+          <form className="lib-search" role="search" onSubmit={(e) => { e.preventDefault(); update({ q: search }); }}>
+            <span className="ic" aria-hidden="true">⌕</span>
             <input
-              type="text"
-              placeholder="Search titles & topics…"
+              type="search"
+              placeholder="Search titles, tags & transcripts…"
               value={search}
+              maxLength={200}
               onChange={(e) => setSearch(e.target.value)}
-              aria-label="Search the library"
+              aria-label="Search titles, tags and transcripts"
             />
-          </div>
+          </form>
         </div>
       </div>
 
       <div className="toolbar">
-        <div className="filters">
-          {TYPES.map((t) => (
-            <button
-              key={t}
-              type="button"
-              className={"pill" + (activeType === t ? " solid" : "")}
-              onClick={() => update({ type: t })}
-            >
-              {t === "all" ? "All" : t}
-            </button>
-          ))}
-        </div>
+        {types.length > 0 ? (
+          <div className="filters" role="group" aria-label="Video type">
+            {[{ type: "all", count: 0 }, ...types].map((t) => (
+              <button
+                key={t.type}
+                type="button"
+                className={"pill" + (activeType === t.type ? " solid" : "")}
+                aria-pressed={activeType === t.type}
+                onClick={() => update({ type: t.type })}
+              >
+                {t.type === "all" ? "All" : `${t.type} · ${t.count}`}
+              </button>
+            ))}
+          </div>
+        ) : <div />}
         <div className="right">
-          <div className="sortsel">
+          <label className="sortsel">
             <span>SORT</span>
-            <select value={sort} onChange={(e) => update({ sort: e.target.value })}>
+            <select value={sort} onChange={(e) => update({ sort: e.target.value })} aria-label="Sort videos">
               {SORTS.map((s) => (
                 <option key={s.v} value={s.v}>{s.label}</option>
               ))}
             </select>
-          </div>
+          </label>
         </div>
       </div>
     </>
