@@ -135,11 +135,14 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
   });
 
   test("malformed filters are a 400, not a 500", async () => {
-    for (const filters of [{ topics: "governance" }, { video_ids: "abc" }, { date_from: "yesterday" }, { nope: 1 }, []]) {
+    for (const filters of [{ topics: "governance" }, { video_ids: "abc" }, { date_from: "yesterday" }, []]) {
       const res = await askRoute.POST(post("/api/ask", { query: "fine question", filters }));
       assert.equal(res.status, 400, JSON.stringify(filters));
     }
     assert.equal(fake.calls.embeddings, 0);
+    // Unknown filter keys stay ignored for backward compatibility.
+    const lenient = await askRoute.POST(post("/api/ask", { query: "fine question", filters: { legacy_flag: true } }));
+    assert.equal(lenient.status, 200);
   });
 
   test("daily answer cap holds and degrades to 503 with a reset hint", async () => {

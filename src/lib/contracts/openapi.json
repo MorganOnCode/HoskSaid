@@ -57,8 +57,7 @@
                         },
                         "maxItems": 10
                       }
-                    },
-                    "additionalProperties": false
+                    }
                   },
                   "with_citations": {
                     "type": "boolean",

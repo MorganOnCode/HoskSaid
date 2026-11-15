@@ -63,11 +63,9 @@ export function validateFilters(raw: unknown): Validated<{ filters: AskFilters |
   if (typeof raw !== "object" || Array.isArray(raw)) {
     return { ok: false, error: "invalid_filters", detail: "filters must be an object" };
   }
+  // Unknown filter keys are ignored (as before) to keep existing clients working;
+  // known keys are type-checked.
   const f = raw as Record<string, unknown>;
-  const known = new Set(["date_from", "date_to", "video_ids", "topics"]);
-  for (const k of Object.keys(f)) {
-    if (!known.has(k)) return { ok: false, error: "invalid_filters", detail: `unknown filter: ${k}` };
-  }
   const out: AskFilters = {};
   const scope: Scope = { youtubeIds: null, topicSlugs: null, from: null, to: null };
 
