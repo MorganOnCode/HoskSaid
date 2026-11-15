@@ -1,5 +1,25 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## API rate limits
+
+Run `npm test` for limiter regression checks. Anonymous requests have a 120-request
+burst and refill at 60/minute by default. Only keys explicitly listed in
+`HOSK_API_KEYS` receive the 600/minute tier. An absent or empty allowlist accepts no
+bearer keys; unknown or empty bearer keys return `401 invalid_key`.
+
+`TRUST_CLOUDFLARE_IP=true` uses the validated `CF-Connecting-IP` header. Enable it
+only when public traffic must traverse Cloudflare; the production Compose service
+does this with a loopback-only origin. Local users and containers with direct
+origin access remain trusted. Without this setting, or with a missing/invalid
+header, anonymous clients share one fallback bucket. `X-Forwarded-For` is ignored.
+See [Cloudflare's header documentation](https://developers.cloudflare.com/fundamentals/reference/http-headers/).
+
+The in-process limiter retains at most 10,000 identities. At capacity, new
+identities receive `429` with `Retry-After: 60`; existing allowances are preserved.
+Idle, fully refilled buckets expire after five minutes, swept at most once per
+minute on requests. Limits reset on process restart and are not shared across
+replicas. These are request limits, not a provider spending cap.
+
 ## Getting Started
 
 First, run the development server:

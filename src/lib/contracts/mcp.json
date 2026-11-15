@@ -12,7 +12,7 @@
     "required": false,
     "scheme": "bearer",
     "header": "Authorization",
-    "note": "Anonymous access is read-only and rate-limited (60 req/min/IP). Send 'Authorization: Bearer <key>' for 600 req/min."
+    "note": "Anonymous access is read-only and rate-limited (60 req/min/IP). Send 'Authorization: Bearer <key>' with a maintainer-issued key for 600 req/min. Unrecognized or empty bearer keys return 401."
   },
   "tools": [
     {

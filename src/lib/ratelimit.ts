@@ -7,21 +7,36 @@
  *   - API key:   600 req/min
  */
 import type { NextRequest } from "next/server";
+import { isIP } from "node:net";
 
 const ANON_PER_MIN = parseInt(process.env.RATE_LIMIT_ANON || "60", 10);
 const KEYED_PER_MIN = parseInt(process.env.RATE_LIMIT_KEYED || "600", 10);
 
 interface Bucket { tokens: number; last: number; capacity: number; refillPerSec: number }
 const buckets = new Map<string, Bucket>();
+const BUCKET_MAX = 10_000;
+const BUCKET_IDLE_MS = 5 * 60_000;
+const SWEEP_INTERVAL_MS = 60_000;
+let lastSweep = 0;
 
 function take(key: string, perMin: number, burst: number, now: number): { ok: boolean; retryAfter: number } {
+  if (now - lastSweep >= SWEEP_INTERVAL_MS) {
+    for (const [id, bucket] of buckets) {
+      // Only discard idle buckets once their allowance would be fully refilled.
+      const refillMs = bucket.capacity / bucket.refillPerSec * 1000;
+      if (now - bucket.last >= Math.max(BUCKET_IDLE_MS, refillMs)) buckets.delete(id);
+    }
+    lastSweep = now;
+  }
   let b = buckets.get(key);
   if (!b) {
+    // Do not evict active identities: doing so would reset their allowances.
+    if (buckets.size >= BUCKET_MAX) return { ok: false, retryAfter: 60 };
     b = { tokens: burst, last: now, capacity: burst, refillPerSec: perMin / 60 };
     buckets.set(key, b);
   }
   // Refill.
-  const elapsed = (now - b.last) / 1000;
+  const elapsed = Math.max(0, now - b.last) / 1000;
   b.tokens = Math.min(b.capacity, b.tokens + elapsed * b.refillPerSec);
   b.last = now;
   if (b.tokens >= 1) {
@@ -32,11 +47,16 @@ function take(key: string, perMin: number, burst: number, now: number): { ok: bo
 }
 
 function clientIp(req: NextRequest): string {
-  const xff = req.headers.get("x-forwarded-for");
-  return (xff ? xff.split(",")[0].trim() : null) || req.headers.get("cf-connecting-ip") || "anon";
+  // Opt in only behind a Cloudflare-only ingress. Never trust caller-supplied
+  // X-Forwarded-For. Direct/unidentified clients share a conservative bucket.
+  if (process.env.TRUST_CLOUDFLARE_IP === "true") {
+    const ip = req.headers.get("cf-connecting-ip")?.trim();
+    if (ip && isIP(ip)) return ip;
+  }
+  return "anon";
 }
 
-/** Valid keys come from HOSK_API_KEYS (comma-separated). Empty ⇒ keys ignored. */
+/** Valid keys come from HOSK_API_KEYS (comma-separated). Empty ⇒ no valid keys. */
 function validKeys(): Set<string> {
   return new Set((process.env.HOSK_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean));
 }
@@ -54,9 +74,9 @@ export function checkRate(req: NextRequest): RateResult {
   const auth = req.headers.get("authorization");
   const keys = validKeys();
 
-  if (auth?.toLowerCase().startsWith("bearer ")) {
-    const key = auth.slice(7).trim();
-    if (keys.size > 0 && !keys.has(key)) {
+  if (auth && /^bearer(?:\s|$)/i.test(auth)) {
+    const key = auth.slice(6).trim();
+    if (!key || !keys.has(key)) {
       return { ok: false, status: 401, body: { error: "invalid_key" } };
     }
     const r = take(`key:${key}`, KEYED_PER_MIN, KEYED_PER_MIN, now);

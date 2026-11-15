@@ -70,6 +70,8 @@ services:
       # Rate limits (in-memory token bucket): anon/min, keyed/min.
       RATE_LIMIT_ANON: ${RATE_LIMIT_ANON:-60}
       RATE_LIMIT_KEYED: ${RATE_LIMIT_KEYED:-600}
+      # Public ingress is exclusively the Cloudflare tunnel; keep port loopback-only.
+      TRUST_CLOUDFLARE_IP: "true"
       # Optional: comma-separated bearer keys that get the keyed tier.
       HOSK_API_KEYS: ${HOSK_API_KEYS:-}
       NEXT_TELEMETRY_DISABLED: "1"

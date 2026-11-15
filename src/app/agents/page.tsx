@@ -104,6 +104,7 @@ export default function AgentsPage() {
               <li><span className="dot">◆</span><span>Send <b>Authorization: Bearer &lt;key&gt;</b>.</span></li>
               <li><span className="dot">◆</span><span><b>600 req/min</b>.</span></li>
               <li><span className="dot">◆</span><span>Contact the maintainer for a key.</span></li>
+              <li><span className="dot">◆</span><span>Unrecognized or empty bearer keys return <b>401</b>.</span></li>
             </ul>
           </div>
         </div>
