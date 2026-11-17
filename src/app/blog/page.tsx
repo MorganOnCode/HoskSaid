@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export const metadata = {
   title: "Blog",
   description: "Monthly, source-linked digests of what Charles Hoskinson discussed in his public videos.",
-  alternates: { canonical: "/blog", types: { "application/rss+xml": "/blog/feed.xml" } },
+  alternates: { canonical: "/blog" },
 };
 
 /** Published posts only; drafts and withdrawn posts never appear here. */
@@ -16,7 +16,7 @@ export default async function BlogIndex() {
   return (
     <div className="wrap">
       <div className="page-head">
-        <span className="eyebrow"><span className="dot" />MONTHLY DIGEST · <a href="/blog/feed.xml">RSS</a></span>
+        <span className="eyebrow"><span className="dot" />MONTHLY DIGEST</span>
         <h1>The month in <em>Charles&apos;s words</em></h1>
         <p className="sub">What Charles discussed in his public videos each month. Every paragraph links to the video it comes from.</p>
       </div>

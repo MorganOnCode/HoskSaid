@@ -1,6 +1,6 @@
 /**
  * Monthly drafts, pure parts: calendar windows, schedule arithmetic, the
- * evidence check, strict edit validation, link building and escaping.
+ * evidence check, strict post-content validation, link building and escaping.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,8 +8,8 @@ import { addMonths, monthWindow, previousMonth, zonedInstant, parseMonth } from 
 import { duePeriods, nextScheduledAt, scheduleConfig, scheduledAt } from "../src/lib/digest/schedule";
 import { checkGrounding } from "../src/lib/digest/grounding";
 import { monthlyModelConfig, describeModelError } from "../src/lib/digest/model";
-import { LIMITS, validateEdit, type PostSource } from "../src/lib/posts";
-import { escapeHtml, postFeedHtml, resolveCite, youtubeHref } from "../src/lib/render/post";
+import { LIMITS, validatePostContent, type Post, type PostSource } from "../src/lib/posts";
+import { escapeHtml, postReviewHtml, resolveCite, youtubeHref } from "../src/lib/render/post";
 
 const iso = (d: Date) => d.toISOString();
 
@@ -139,35 +139,35 @@ const SOURCES: PostSource[] = [
   { id: "S1", video_id: "OCTvideo001", title: "Treasury", published_at: "2026-10-05T10:00:00.000Z", summary: "Treasury reform.", excerpts: [], moments: [{ id: "S1.1", segment_id: "x", start_seconds: 125, excerpt: "reform the treasury" }] },
   { id: "S2", video_id: "OCTvideo002", title: "Hydra", published_at: "2026-10-20T10:00:00.000Z", summary: "Hydra.", excerpts: [], moments: [] },
 ];
-const GOOD_EDIT = { revision: 3, title: "T", dek: null, body: { intro: [{ text: "Intro.", cites: ["S1"] }], sections: [{ heading: "H", paragraphs: [{ text: "P.", cites: ["S1.1", "S2"] }] }] } };
+const GOOD = { title: "T", dek: null, body: { intro: [{ text: "Intro.", cites: ["S1"] }], sections: [{ heading: "H", paragraphs: [{ text: "P.", cites: ["S1.1", "S2"] }] }] } };
 
-test("operator edits are validated strictly: rejected whole, never trimmed", () => {
-  const ok = validateEdit({ ...GOOD_EDIT, _reference: { anything: true } }, SOURCES);
+test("post content is validated strictly: rejected whole, never trimmed", () => {
+  const ok = validatePostContent(GOOD, SOURCES);
   assert.ok(ok.ok);
   const cases: [string, unknown, RegExp][] = [
-    ["not an object", [], /JSON object/],
-    ["missing revision", { ...GOOD_EDIT, revision: undefined }, /revision/],
-    ["unknown top-level field", { ...GOOD_EDIT, extra: 1 }, /unknown field "extra"/],
-    ["oversized paragraph", { ...GOOD_EDIT, body: { intro: [{ text: "x".repeat(LIMITS.paragraph + 1), cites: ["S1"] }], sections: [] } }, /exceeds the 1500 limit/],
-    ["oversized title", { ...GOOD_EDIT, title: "t".repeat(LIMITS.title + 1) }, /title: 141 characters/],
-    ["too many sections", { ...GOOD_EDIT, body: { intro: [], sections: Array.from({ length: LIMITS.sections + 1 }, () => GOOD_EDIT.body.sections[0]) } }, /sections exceeds/],
-    ["too many intro paragraphs", { ...GOOD_EDIT, body: { intro: Array.from({ length: LIMITS.intro + 1 }, () => GOOD_EDIT.body.intro[0]), sections: [] } }, /intro: 5 paragraphs/],
-    ["unknown cite", { ...GOOD_EDIT, body: { intro: [{ text: "Made up", cites: ["S9"] }], sections: [] } }, /S9 is not one of this post's sources/],
-    ["malformed cite", { ...GOOD_EDIT, body: { intro: [{ text: "x", cites: ["<b>"] }], sections: [] } }, /not a source id/],
-    ["no cites", { ...GOOD_EDIT, body: { intro: [{ text: "x", cites: [] }], sections: [] } }, /non-empty array/],
-    ["empty paragraph text", { ...GOOD_EDIT, body: { intro: [{ text: "  ", cites: ["S1"] }], sections: [] } }, /must not be empty/],
-    ["paragraph extra field", { ...GOOD_EDIT, body: { intro: [{ text: "x", cites: ["S1"], html: "<b>" }], sections: [] } }, /unknown field "html"/],
-    ["line break", { ...GOOD_EDIT, title: "a\nb" }, /control characters/],
-    ["empty section", { ...GOOD_EDIT, body: { intro: [], sections: [{ heading: "H", paragraphs: [] }] } }, /non-empty array/],
-    ["empty body", { ...GOOD_EDIT, body: { intro: [], sections: [] } }, /no paragraphs/],
+    ["not an object", [], /must be an object/],
+    ["missing dek", { title: GOOD.title, body: GOOD.body }, /missing field "dek"/],
+    ["unknown top-level field", { ...GOOD, extra: 1 }, /unknown field "extra"/],
+    ["oversized paragraph", { ...GOOD, body: { intro: [{ text: "x".repeat(LIMITS.paragraph + 1), cites: ["S1"] }], sections: [] } }, /exceeds the 1500 limit/],
+    ["oversized title", { ...GOOD, title: "t".repeat(LIMITS.title + 1) }, /title: 141 characters/],
+    ["too many sections", { ...GOOD, body: { intro: [], sections: Array.from({ length: LIMITS.sections + 1 }, () => GOOD.body.sections[0]) } }, /sections exceeds/],
+    ["too many intro paragraphs", { ...GOOD, body: { intro: Array.from({ length: LIMITS.intro + 1 }, () => GOOD.body.intro[0]), sections: [] } }, /intro: 5 paragraphs/],
+    ["unknown cite", { ...GOOD, body: { intro: [{ text: "Made up", cites: ["S9"] }], sections: [] } }, /S9 is not one of this post's sources/],
+    ["malformed cite", { ...GOOD, body: { intro: [{ text: "x", cites: ["<b>"] }], sections: [] } }, /not a source id/],
+    ["no cites", { ...GOOD, body: { intro: [{ text: "x", cites: [] }], sections: [] } }, /non-empty array/],
+    ["empty paragraph text", { ...GOOD, body: { intro: [{ text: "  ", cites: ["S1"] }], sections: [] } }, /must not be empty/],
+    ["paragraph extra field", { ...GOOD, body: { intro: [{ text: "x", cites: ["S1"], html: "<b>" }], sections: [] } }, /unknown field "html"/],
+    ["line break", { ...GOOD, title: "a\nb" }, /control characters/],
+    ["empty section", { ...GOOD, body: { intro: [], sections: [{ heading: "H", paragraphs: [] }] } }, /non-empty array/],
+    ["empty body", { ...GOOD, body: { intro: [], sections: [] } }, /no paragraphs/],
   ];
   for (const [name, raw, re] of cases) {
-    const r = validateEdit(raw, SOURCES);
+    const r = validatePostContent(raw, SOURCES);
     assert.equal(r.ok, false, name);
     if (!r.ok) assert.ok(r.errors.some((e) => re.test(e)), `${name}: ${r.errors.join(" | ")}`);
   }
   // Several problems are all reported at once.
-  const multi = validateEdit({ ...GOOD_EDIT, title: "", body: { intro: [{ text: "x", cites: ["S7"] }], sections: [{ heading: "", paragraphs: [{ text: "y", cites: [] }] }] } }, SOURCES);
+  const multi = validatePostContent({ ...GOOD, title: "", body: { intro: [{ text: "x", cites: ["S7"] }], sections: [{ heading: "", paragraphs: [{ text: "y", cites: [] }] }] } }, SOURCES);
   assert.ok(!multi.ok && multi.errors.length >= 4);
 });
 
@@ -188,15 +188,18 @@ test("links: timestamps only from real timings; ids validated; text escaped", ()
   assert.equal(resolveCite("S1.1", badTime), null);
   assert.equal(youtubeHref("OCTvideo001"), "https://www.youtube.com/watch?v=OCTvideo001");
   assert.equal(escapeHtml(`<a href="x">'&`), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;");
-  const html = postFeedHtml(
-    {
-      id: "1", period: "2026-10", slug: "2026-10", title: "<t>", dek: "<d>", published_at: null, sources: SOURCES,
-      coverage: { timezone: "UTC", period_start: "", period_end: "", videos_in_period: 2, videos_covered: 2, missing: [], sampled: [], complete: true },
-      body: { intro: [{ text: "<script>alert(1)</script>", cites: ["S1.1"] }], sections: [{ heading: "<h>", paragraphs: [{ text: "ok", cites: ["S2"] }] }] },
+  const post = {
+    id: "1", kind: "monthly", period: "2026-10", slug: "2026-10", status: "draft", revision: 1, title: "<t>", dek: "<d>", sources: SOURCES, input_hash: "h",
+    coverage: { timezone: "UTC", period_start: "", period_end: "", videos_in_period: 2, videos_covered: 2, missing: [], sampled: [], complete: true },
+    body: { intro: [{ text: "<script>alert(1)</script>", cites: ["S1.1"] }], sections: [{ heading: "<h>", paragraphs: [{ text: "ok", cites: ["S2"] }] }] },
+    generation: {
+      provider: "fake", model: "<m>", prompt_version: "p", generated_at: "", trigger: "cli", ingestion_cutoff: null, limits: {},
+      calls: { notes: 0, reduce: 0, final: 0, cached_videos: 0 }, rejected: [{ stage: "final", text: "<img>", cites: [], reason: "r" }], rejected_total: 1, deterministic_section: false,
     },
-    "https://x.test"
-  );
-  assert.ok(!/<script>|<t>|<h>|<d>/.test(html));
+    published_at: null, published_by: null, withdrawn_at: null, withdrawn_by: null, created_at: "", updated_at: "",
+  } satisfies Post;
+  const html = postReviewHtml(post, "https://x.test");
+  assert.ok(!/<script>|<t>|<h>|<d>|<m>|<img>/.test(html));
   assert.match(html, /&lt;script&gt;/);
   assert.match(html, /href="https:\/\/x\.test\/video\/OCTvideo001\?t=125"/);
   assert.match(html, /Covers all 2 videos published in October 2026 \(UTC\)/);

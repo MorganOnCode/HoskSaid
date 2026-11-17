@@ -39,7 +39,7 @@ npx tsx src/cli/hosk.ts migrate apply             # apply in order
 | 008 | `client_usage_daily` (per-client daily allowance) | new table |
 | 009 | `posts`, `post_events`, `post_video_notes`, `post_generation_runs`, `post_generation_budget` (monthly drafts) | new tables |
 
-**Apply migrations before the new image goes live.** Run `migrate apply` (with the new image, e.g. `docker compose -f docker-compose.prod.yml run --rm web npx tsx src/cli/hosk.ts migrate apply`) and confirm `migrate` shows nothing pending before switching traffic to it. This release's code needs 003, 004, 005 and 008: without them Ask, `/api/search` and the MCP search tools return 500 (missing function or tables), and Library keyword search with `q` returns 500 (missing `search_tsv`). The `posts` CLI and the monthly scheduler need 009; until it is applied `/blog` and `/blog/feed.xml` show no posts. Every migration is additive, so the previous image keeps working against the migrated schema. Later schema changes follow the same order: migrate first, then activate the image that needs them.
+**Apply migrations before the new image goes live.** Run `migrate apply` (with the new image, e.g. `docker compose -f docker-compose.prod.yml run --rm web npx tsx src/cli/hosk.ts migrate apply`) and confirm `migrate` shows nothing pending before switching traffic to it. This release's code needs 003, 004, 005 and 008: without them Ask, `/api/search` and the MCP search tools return 500 (missing function or tables), and Library keyword search with `q` returns 500 (missing `search_tsv`). The `posts` CLI and the monthly scheduler need 009; until it is applied `/blog` shows no posts. Every migration is additive, so the previous image keeps working against the migrated schema. Later schema changes follow the same order: migrate first, then activate the image that needs them.
 
 A fresh volume runs `docker/init-db.sql` on first boot. Run `migrate apply` afterwards.
 
@@ -147,7 +147,7 @@ The evidence check is lexical: it catches invented specifics and off-source para
 **Bounds:**
 
 - The whole run is planned before the first call.
-- A plan over the per-run limit (150 calls) or over the month's remaining `MONTHLY_DRAFT_CALL_BUDGET` is refused with zero calls.
+- A plan over the per-run limit (150 calls) or over the month's remaining `MONTHLY_DRAFT_CALL_BUDGET` is refused with zero calls. The plan sizes every notes and reduce block at its worst case (full-length text, the maximum citations at the longest ids), and a run never makes more calls than its plan.
 - Each call is reserved against the budget atomically, so neither retries nor concurrent runs can exceed it.
 - Output is capped at 700 tokens per notes call, 1,800 per reduce call and 3,000 for the final call.
 - There is no default budget and no "unlimited" setting.
@@ -157,8 +157,6 @@ npx tsx src/cli/hosk.ts posts generate --month previous --dry-run    # inputs, m
 npx tsx src/cli/hosk.ts posts generate --month 2026-10                # needs OPENAI_API_KEY + MONTHLY_DRAFT_CALL_BUDGET
 npx tsx src/cli/hosk.ts posts show 2026-10                            # coverage, rejections, revision, events
 npx tsx src/cli/hosk.ts posts preview 2026-10 --format html --out review.html   # PRIVATE review page with cited evidence
-npx tsx src/cli/hosk.ts posts export 2026-10 --out draft.json         # edit title/dek/body; keep "revision"
-npx tsx src/cli/hosk.ts posts import 2026-10 --file draft.json --by <name>
 npx tsx src/cli/hosk.ts posts publish 2026-10 --by <name> --revision <n> [--accept-incomplete]
 npx tsx src/cli/hosk.ts posts withdraw 2026-10 --by <name>
 ```
@@ -166,19 +164,19 @@ npx tsx src/cli/hosk.ts posts withdraw 2026-10 --by <name>
 **Rules:**
 
 - **One post per month.** `UNIQUE(kind, period)`. Concurrent runs for the same month are serialised by an advisory lock; the loser reports `busy` and does nothing.
-- **Safe retries.** Unchanged inputs make no model call. Only an *unedited draft* is regenerated, for example after late ingestion. Edited, published and withdrawn posts are reported as `kept`, together with any videos published since.
-- **Visible incompleteness.** Every post stores coverage: videos in the window, videos covered, and missing videos with a reason. Pages and the feed print it ("Covers 10 of 12 videos…"). Publishing an incomplete month needs `--accept-incomplete`.
+- **Safe retries.** Unchanged inputs make no model call. A draft whose videos failed (`model_failed`, `not_attempted`) retries only those videos; if they fail again the draft, and its revision, stay as they were (`unchanged`, with the retry recorded in `post_generation_runs`). Only a *draft* is regenerated, for example after late ingestion. Published and withdrawn posts are reported as `kept`, together with any videos published since.
+- **Visible incompleteness.** Every post stores coverage: videos in the window, videos covered, and missing videos with a reason. Pages print it ("Covers 10 of 12 videos…"). Publishing an incomplete month needs `--accept-incomplete`.
 - **Nothing misleading is written.** An empty month, a month with no grounded notes, or unusable synthesis output writes no post.
-- **Strict edits.** An edit must name the revision it was exported from. It is validated whole: unknown fields, oversized text, too many sections or paragraphs, bad or unknown citations, and line breaks are all reported, and nothing is trimmed or dropped. The draft must then be re-exported.
-- **Explicit publication.** `publish` names the reviewed revision and records `--by`. Every generation, edit, publish and withdrawal is in `post_events`. There is no web admin and no mutation route.
-- **Public surfaces.** `/blog`, `/blog/<YYYY-MM>` and `/blog/feed.xml` show **published** posts only, from public columns only. Generation metadata (model, limits, rejections) stays in the CLI.
+- **Strict output.** Every generated draft is validated whole before it is stored: oversized text, too many sections or paragraphs, bad or unknown citations, and line breaks fail the run; nothing is trimmed or dropped.
+- **Explicit publication.** `publish` names the reviewed revision and records `--by`. Every generation, publish and withdrawal is in `post_events`. There is no web admin and no mutation route.
+- **Public surfaces.** `/blog` and `/blog/<YYYY-MM>` show **published** posts only, from public columns only. Generation metadata (model, limits, rejections) stays in the CLI.
 
 ### Schedule (opt-in, off by default)
 
 The `monthly-drafts` compose service runs `posts schedule run`. It checks every `MONTHLY_SCHEDULE_CHECK_MINUTES` (60) and drafts each closed month once due: day `MONTHLY_SCHEDULE_DAY` (1) of the next month at `MONTHLY_SCHEDULE_HOUR` (06:00), local to `MONTHLY_DRAFT_TIMEZONE`.
 
 - **Missed runs.** The last `MONTHLY_SCHEDULE_CATCHUP_MONTHS` (2) closed months are considered on every check, so a scheduler that was down on the day catches up when it next runs.
-- **Rechecks.** A month checked within `MONTHLY_SCHEDULE_RECHECK_HOURS` (24) is skipped. After that it is re-run: a no-op unless an unedited draft's inputs changed.
+- **Rechecks.** A month checked within `MONTHLY_SCHEDULE_RECHECK_HOURS` (24) is skipped. After that it is re-run: a no-op unless a draft's inputs changed or its failed videos now produce notes.
 - **Never publishes, never emails.** It is not coupled to any newsletter.
 
 **Timezone.** `UTC` is the development default until the production zone is confirmed. `posts schedule status` labels it as the default.

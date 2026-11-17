@@ -1,12 +1,12 @@
 /**
  * Monthly schedule and operator CLI, executed for real: the compose service's
  * command and environment, disabled/missing configuration, due/missed/catch-up
- * months over simulated time, reruns, and the draft -> edit -> publish flow
+ * months over simulated time, reruns, and the draft -> review -> publish flow
  * through the CLI. The model is a fake; no provider is called.
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -45,9 +45,11 @@ describe("compose scheduler artifact", { skip: hasDockerCompose() ? false : "doc
     assert.equal(svc!.environment.MONTHLY_DRAFT_TIMEZONE, "UTC");
     assert.equal(svc!.environment.MONTHLY_DRAFT_CALL_BUDGET, "", "no invented budget");
     assert.equal(svc!.restart, "on-failure:3");
-    const text = readFileSync(COMPOSE, "utf8");
-    const block = text.slice(text.indexOf("  monthly-drafts:"), text.indexOf("\nvolumes:"));
-    assert.ok(!/publish|newsletter|SMTP|EMAIL/i.test(block.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n")), "the service only drafts");
+    assert.deepEqual(
+      Object.keys(svc!.environment).filter((k) => /SMTP|EMAIL|MAIL|NEWSLETTER|PUBLISH/i.test(k)),
+      [],
+      "the service is given no mail, newsletter or publishing configuration"
+    );
   });
 });
 
@@ -123,7 +125,7 @@ describe("monthly schedule", { skip: SKIP_DB }, () => {
     assert.deepEqual(recheck.map((e) => e.outcome), ["unchanged", "unchanged"]);
     assert.equal(model.calls.length, calls1);
 
-    // Late ingestion after the run: the unedited draft picks it up on the next recheck.
+    // Late ingestion after the run: the draft picks it up on the next recheck.
     await seedVideo(db.sql, { youtube_id: "OCTlate0001", title: "Late", published_at: "2026-10-30T10:00:00Z", summary: "• Late October talk on staking.", chunks: [{ content: "Late October talk on staking and delegation.", start: 5 }] });
     const late = await tick("2026-11-03T08:00:00Z");
     assert.equal(late.find((e) => e.period === "2026-10")?.outcome, "updated");
@@ -198,7 +200,7 @@ describe("monthly schedule", { skip: SKIP_DB }, () => {
     assert.match(unknown.out, /unknown flag --publish/);
   });
 
-  test("operator CLI: dry run, review, strict import, revision-pinned publish, withdraw", async () => {
+  test("operator CLI: dry run, private review, revision-pinned publish, withdraw", async () => {
     const dry = cli(["posts", "generate", "--month", "2026-10", "--dry-run"]);
     assert.equal(dry.code, 0, dry.out);
     assert.match(dry.out, /videos_in_period: 2/);
@@ -224,47 +226,30 @@ describe("monthly schedule", { skip: SKIP_DB }, () => {
     assert.match(html, /Covers all 2 videos published in October 2026/);
     assert.match(html, /evidence/);
 
-    const file = path.join(tmp, "edit.json");
-    assert.equal(cli(["posts", "export", "2026-10", "--out", file]).code, 0);
-    const doc = JSON.parse(readFileSync(file, "utf8"));
-    assert.equal(doc.revision, 1);
+    const json = path.join(tmp, "draft.json");
+    assert.equal(cli(["posts", "preview", "2026-10", "--format", "json", "--out", json]).code, 0);
+    const draft = JSON.parse(readFileSync(json, "utf8"));
+    assert.equal(draft.revision, 1);
+    assert.ok(draft.sources.length > 0, "the private preview carries the source evidence");
 
-    // Oversized and invalid edits are rejected whole.
-    const bad = structuredClone(doc);
-    bad.body.intro[0].text = "x".repeat(2000);
-    bad.body.intro.push({ text: "Unsupported", cites: ["S9"] });
-    writeFileSync(file, JSON.stringify(bad));
-    const rejected = cli(["posts", "import", "2026-10", "--file", file, "--by", "editor"]);
-    assert.equal(rejected.code, 1);
-    assert.match(rejected.out, /exceeds the 1500 limit/);
-    assert.match(rejected.out, /S9 is not one of this post's sources/);
-    writeFileSync(file, "x".repeat(300 * 1024));
-    assert.match(cli(["posts", "import", "2026-10", "--file", file, "--by", "editor"]).out, /limit is 262144/);
-    assert.equal(cli(["posts", "import", "2026-10", "--file", file]).code, 2, "--by is required");
-
-    const good = structuredClone(doc);
-    good.title = "October, reviewed";
-    writeFileSync(file, JSON.stringify(good));
-    const applied = cli(["posts", "import", "2026-10", "--file", file, "--by", "editor"]);
-    assert.equal(applied.code, 0, applied.out);
-    assert.match(applied.out, /revision: 2/);
+    for (const sub of ["export", "import"]) assert.equal(cli(["posts", sub, "2026-10"]).code, 2, `posts ${sub} is not a command`);
 
     assert.equal(cli(["posts", "publish", "2026-10", "--by", "firstmate"]).code, 2, "--revision is required");
-    const stale = cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "1"]);
+    const stale = cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "2"]);
     assert.equal(stale.code, 1);
-    assert.match(stale.out, /revision 2, not 1/);
-    const pub = cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "2"]);
+    assert.match(stale.out, /revision 1, not 2/);
+    const pub = cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "1"]);
     assert.equal(pub.code, 0, pub.out);
     assert.match(pub.out, /url: "?https:\/\/example\.test\/blog\/2026-10/);
-    assert.match(cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "2"]).out, /already published \(no-op\)/);
-    assert.equal((await posts.getPublishedPost("2026-10"))?.title, "October, reviewed");
+    assert.match(cli(["posts", "publish", "2026-10", "--by", "firstmate", "--revision", "1"]).out, /already published \(no-op\)/);
+    assert.equal((await posts.getPublishedPost("2026-10"))?.title, draft.title);
 
     const wd = cli(["posts", "withdraw", "2026-10", "--by", "firstmate"]);
     assert.equal(wd.code, 0);
     assert.equal(await posts.getPublishedPost("2026-10"), null);
     assert.match(cli(["posts", "withdraw", "2026-10", "--by", "firstmate"]).out, /already withdrawn/);
     const events = cli(["posts", "show", "2026-10"]).out;
-    assert.match(events, /published,firstmate,2/);
-    assert.match(events, /withdrawn,firstmate,2/);
+    assert.match(events, /published,firstmate,1/);
+    assert.match(events, /withdrawn,firstmate,1/);
   });
 });

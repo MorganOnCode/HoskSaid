@@ -2,12 +2,11 @@
  * Monthly posts: types, strict validation and data access (server-only).
  *
  * A post body is structured data, never HTML: paragraphs of plain text, each
- * citing source ids. Rendering escapes everything, so neither model output nor
- * operator edits can inject markup. Public routes read only `published` posts
+ * citing source ids. Rendering escapes everything, so model output cannot
+ * inject markup. Public routes read only `published` posts
  * and only public columns; generation metadata never leaves the operator CLI.
  */
 import { sql } from "./db";
-import { checkGrounding } from "./digest/grounding";
 
 export type PostStatus = "draft" | "published" | "withdrawn";
 
@@ -99,8 +98,6 @@ export interface Post {
   coverage: PostCoverage;
   generation: PostGeneration;
   input_hash: string;
-  edited_at: string | null;
-  edited_by: string | null;
   published_at: string | null;
   published_by: string | null;
   withdrawn_at: string | null;
@@ -109,7 +106,7 @@ export interface Post {
   updated_at: string;
 }
 
-/** What public pages and the feed may see. */
+/** What public pages may see. */
 export type PublicPost = Pick<Post, "id" | "period" | "slug" | "title" | "dek" | "body" | "sources" | "coverage" | "published_at">;
 
 export const LIMITS = {
@@ -121,8 +118,6 @@ export const LIMITS = {
   paragraphsPerSection: 40,
   intro: 4,
   citesPerParagraph: 12,
-  /** Maximum size of an operator edit file. */
-  editBytes: 256 * 1024,
 } as const;
 
 export const CITE_RE = /^S\d{1,3}(\.\d{1,3})?$/;
@@ -156,8 +151,7 @@ export function citedVideoIds(body: PostBody): Set<string> {
 
 // ---------------------------------------------------------------- strict validation
 
-export interface EditDocument {
-  revision: number;
+export interface PostContent {
   title: string;
   dek: string | null;
   body: PostBody;
@@ -210,15 +204,14 @@ function checkParagraph(v: unknown, ids: Set<string>, path: string, errors: stri
 }
 
 /**
- * Validate an operator edit against the post's own sources. Every problem is
- * reported; nothing is trimmed, truncated or dropped to make an edit fit.
+ * Validate post content against the post's own sources. Every problem is
+ * reported; nothing is trimmed, truncated or dropped to make content fit.
  */
-export function validateEdit(raw: unknown, sources: PostSource[]): { ok: true; edit: EditDocument } | { ok: false; errors: string[] } {
+export function validatePostContent(raw: unknown, sources: PostSource[]): { ok: true; content: PostContent } | { ok: false; errors: string[] } {
   const errors: string[] = [];
-  if (!isObj(raw)) return { ok: false, errors: ["edit must be a JSON object {revision, title, dek, body}"] };
-  checkKeys(raw, ["revision", "title", "dek", "body", "_reference"], "edit", errors);
-  for (const k of ["revision", "title", "dek", "body"]) if (!(k in raw)) errors.push(`edit: missing field "${k}"`);
-  if (!Number.isInteger(raw.revision) || (raw.revision as number) < 1) errors.push("revision: must be the integer revision you exported");
+  if (!isObj(raw)) return { ok: false, errors: ["post content must be an object {title, dek, body}"] };
+  checkKeys(raw, ["title", "dek", "body"], "post", errors);
+  for (const k of ["title", "dek", "body"]) if (!(k in raw)) errors.push(`post: missing field "${k}"`);
   const ids = allSourceIds(sources);
   const title = checkText(raw.title, LIMITS.title, "title", errors);
   const dek = checkText(raw.dek, LIMITS.dek, "dek", errors, { nullable: true });
@@ -264,7 +257,7 @@ export function validateEdit(raw: unknown, sources: PostSource[]): { ok: true; e
     if (Array.isArray(intro) && Array.isArray(sections) && intro.length + sections.length === 0) errors.push("body: has no paragraphs");
   }
   if (errors.length) return { ok: false, errors };
-  return { ok: true, edit: { revision: raw.revision as number, title: title!, dek, body } };
+  return { ok: true, content: { title: title!, dek, body } };
 }
 
 /** Evidence text for a citation: a moment's excerpt, or every excerpt of a video. */
@@ -281,18 +274,6 @@ export function evidenceFor(cites: string[], sources: PostSource[]): string[] {
       out.push(s.title, s.summary ?? "", ...s.excerpts, ...s.moments.map((m) => m.excerpt));
     }
   }
-  return out;
-}
-
-/** Paragraphs whose wording the evidence check would not accept (advisory for edits). */
-export function evidenceWarnings(body: PostBody, sources: PostSource[]): string[] {
-  const out: string[] = [];
-  const check = (p: PostParagraph, path: string) => {
-    const r = checkGrounding(p.text, evidenceFor(p.cites, sources));
-    if (!r.ok) out.push(`${path}: ${r.reason}`);
-  };
-  body.intro.forEach((p, i) => check(p, `body.intro[${i}]`));
-  body.sections.forEach((s, i) => s.paragraphs.forEach((p, j) => check(p, `body.sections[${i}].paragraphs[${j}]`)));
   return out;
 }
 
@@ -375,35 +356,5 @@ export async function withdrawPost(period: string, by: string): Promise<Transiti
     `;
     await tx`INSERT INTO post_events (post_id, action, actor, revision) VALUES (${post.id}, 'withdrawn', ${by}, ${post.revision})`;
     return { changed: true, post: updated } as const;
-  });
-}
-
-export type EditResult =
-  | { ok: true; post: Post; warnings: string[] }
-  | { ok: false; error: string; errors?: string[] };
-
-/**
- * Replace a draft's (or withdrawn post's) text with an operator edit. The edit
- * must name the revision it was exported from, pass strict validation, and
- * marks the post edited so generation never overwrites it. Published posts
- * must be withdrawn before editing.
- */
-export async function applyEdit(period: string, raw: unknown, by: string): Promise<EditResult> {
-  return await sql.begin(async (tx) => {
-    const [post] = await tx<Post[]>`SELECT * FROM posts WHERE kind = 'monthly' AND period = ${period} FOR UPDATE`;
-    if (!post) return { ok: false, error: "not_found" } as const;
-    if (post.status === "published") return { ok: false, error: "published posts cannot be edited; withdraw it first" } as const;
-    const v = validateEdit(raw, post.sources);
-    if (!v.ok) return { ok: false, error: `${v.errors.length} validation error(s)`, errors: v.errors } as const;
-    if (v.edit.revision !== post.revision) {
-      return { ok: false, error: `revision mismatch: the edit is based on revision ${v.edit.revision}, the post is at revision ${post.revision}; export again and reapply your changes` } as const;
-    }
-    const [updated] = await tx<Post[]>`
-      UPDATE posts SET title = ${v.edit.title}, dek = ${v.edit.dek}, body = ${json(v.edit.body)},
-        revision = revision + 1, edited_at = now(), edited_by = ${by}, updated_at = now()
-      WHERE id = ${post.id} RETURNING *
-    `;
-    await tx`INSERT INTO post_events (post_id, action, actor, revision) VALUES (${post.id}, 'edited', ${by}, ${updated.revision})`;
-    return { ok: true, post: updated, warnings: evidenceWarnings(v.edit.body, post.sources) } as const;
   });
 }

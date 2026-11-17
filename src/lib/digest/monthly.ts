@@ -32,7 +32,7 @@ import {
   allParagraphs,
   citedVideoIds,
   evidenceFor,
-  validateEdit,
+  validatePostContent,
   type Post,
   type PostBody,
   type PostCoverage,
@@ -92,7 +92,7 @@ export interface DryRunReport {
 
 export type MonthlyResult =
   | { status: "created" | "updated"; post: Post; calls: number }
-  | { status: "unchanged"; post: Post }
+  | { status: "unchanged"; post: Post; calls: number }
   | { status: "kept"; post: Post; reason: string; new_videos: string[] }
   | { status: "insufficient_content"; reason: string; coverage: PostCoverage; calls: number }
   | { status: "synthesis_failed"; reason: string; coverage: PostCoverage; calls: number }
@@ -231,8 +231,30 @@ async function gather(start: Date, end: Date, limits: DraftLimits, modelId: stri
 
 // ---------------------------------------------------------------- planning
 
-function notesBlockWorst(m: Material, limits: DraftLimits): number {
-  return m.title.length + 40 + limits.notesPerVideo * (limits.noteChars + 40);
+/** Longest serialized cite list: `count` ids of `idLen` chars joined by ", ". */
+const citesWorst = (count: number, idLen: number) => count * idLen + 2 * (count - 1);
+
+/**
+ * Worst-case packed size (block + its "\n\n" separator) of one video's notes
+ * block as serialized for reduce/final input, with source ids numbered up to
+ * `count` videos.
+ */
+function notesBlockWorst(m: Material, limits: DraftLimits, count: number): number {
+  const videoId = `S${count}`.length;
+  const cites = m.moments.length
+    ? citesWorst(Math.min(LIMITS.citesPerParagraph, m.moments.length), videoId + 1 + String(m.moments.length).length)
+    : videoId;
+  const header = `[] "" (YYYY-MM-DD)`.length + videoId + m.title.length;
+  const line = `\n-  []`.length + limits.noteChars + cites;
+  return header + limits.notesPerVideo * line + 2;
+}
+
+/** Worst-case packed size of one reduce output block. */
+function reducedBlockWorst(materials: Material[], limits: DraftLimits): number {
+  const maxMoments = Math.max(0, ...materials.map((m) => m.moments.length));
+  const idLen = `S${materials.length}`.length + (maxMoments ? 1 + String(maxMoments).length : 0);
+  const line = `-  []`.length + REDUCE_POINT_CHARS + citesWorst(LIMITS.citesPerParagraph, idLen);
+  return limits.reducePoints * line + (limits.reducePoints - 1) + 2;
 }
 
 /** Greedy contiguous packing; returns group sizes in items. */
@@ -255,7 +277,8 @@ function pack(sizes: number[], cap: number): number[][] {
 
 function planCalls(materials: Material[], cachedCount: number, limits: DraftLimits): CallPlan {
   const notesCalls = materials.length - cachedCount;
-  let sizes = materials.map((m) => notesBlockWorst(m, limits));
+  let sizes = materials.map((m) => notesBlockWorst(m, limits, materials.length));
+  const reduced = reducedBlockWorst(materials, limits);
   let reduce = 0;
   let level = 0;
   let infeasible: string | undefined;
@@ -270,7 +293,7 @@ function planCalls(materials: Material[], cachedCount: number, limits: DraftLimi
     }
     const groups = pack(sizes, limits.synthesisInputChars);
     reduce += groups.length;
-    sizes = groups.map(() => limits.reducePoints * (REDUCE_POINT_CHARS + 60));
+    sizes = groups.map(() => reduced);
     level++;
   }
   // Deterministic "Also this month" sections must fit the post structure.
@@ -366,6 +389,7 @@ function citeList(v: unknown): string[] | null {
 // ---------------------------------------------------------------- budget, lock, ledger
 
 class BudgetExhausted extends Error {}
+class PlanExhausted extends Error {}
 
 async function budgetUsed(period: string): Promise<number> {
   const [row] = await sql<{ calls: number }[]>`SELECT calls FROM post_generation_budget WHERE kind = 'monthly' AND period = ${period}`;
@@ -486,8 +510,8 @@ async function runLocked(
   let calls = 0;
   try {
     const current = (await sql<Post[]>`SELECT * FROM posts WHERE kind = 'monthly' AND period = ${opts.period} LIMIT 1`)[0] ?? null;
-    if (current && (current.status !== "draft" || current.edited_at)) {
-      const reason = current.status !== "draft" ? `post is ${current.status}` : `draft was edited by ${current.edited_by ?? "an operator"}`;
+    if (current && current.status !== "draft") {
+      const reason = `post is ${current.status}`;
       const ids = await sql<{ youtube_id: string }[]>`
         SELECT youtube_id FROM videos WHERE published_at >= ${win.start} AND published_at < ${win.end}
       `;
@@ -522,7 +546,7 @@ async function runLocked(
     const retryable = (p: Post) => p.coverage.missing.some((m) => m.reason === "model_failed" || m.reason === "not_attempted");
     if (current && current.input_hash === inputHash && !retryable(current)) {
       await finishRun(runId, "unchanged", 0);
-      return { status: "unchanged", post: current };
+      return { status: "unchanged", post: current, calls: 0 };
     }
 
     const cache = await cachedNotes(g.materials);
@@ -537,6 +561,7 @@ async function runLocked(
     }
 
     const call = async (system: string, user: string, maxTokens: number): Promise<string> => {
+      if (calls >= plan.total_calls_max) throw new PlanExhausted();
       await reserveCall(opts.period, budget);
       calls++;
       return await opts.model.complete({ system, user, maxTokens });
@@ -604,6 +629,14 @@ async function runLocked(
     missing.sort((a, b) => a.video_id.localeCompare(b.video_id));
     const coverageOf = (covered: number) => baseCoverage(covered, missing, sampled);
 
+    // A retry whose failed videos failed again leaves the synthesis input as it was: keep the draft.
+    const missingKey = (list: PostCoverage["missing"]) => JSON.stringify(list.map((m) => [m.video_id, m.reason]));
+    if (current && current.input_hash === inputHash && missingKey(missing) === missingKey(current.coverage.missing)) {
+      const reason = `retried ${missing.filter((m) => m.reason === "model_failed" || m.reason === "not_attempted").length} video(s) without new notes; the draft is unchanged`;
+      await finishRun(runId, "unchanged", calls, { reason, missing, rejected, rejected_total: rejectedTotal });
+      return { status: "unchanged", post: current, calls };
+    }
+
     if (!noted.length) {
       const reason = budgetHit ? "the month's call budget ran out before any video produced notes; nothing was written" : "no video produced notes that pass the evidence check; nothing was written";
       await finishRun(runId, "insufficient_content", calls, { reason, missing });
@@ -634,7 +667,10 @@ async function runLocked(
           reduceCalls++;
           raw = await call(REDUCE_SYSTEM, `Notes:\n\n${grp.map((i) => blocks[i]).join("\n\n")}`, limits.outputTokens.reduce);
         } catch (e) {
-          synthesisFailure = e instanceof BudgetExhausted ? "call budget exhausted during reduce" : `reduce call failed (${describeModelError(e)})`;
+          synthesisFailure =
+            e instanceof BudgetExhausted ? "call budget exhausted during reduce"
+            : e instanceof PlanExhausted ? "reduce needed more calls than planned"
+            : `reduce call failed (${describeModelError(e)})`;
           break;
         }
         const parsed = parseJson(raw);
@@ -667,7 +703,10 @@ async function runLocked(
         parsed = parseJson(await call(FINAL_SYSTEM, user, limits.outputTokens.final));
         if (!parsed) synthesisFailure = "final synthesis output was not the requested JSON";
       } catch (e) {
-        synthesisFailure = e instanceof BudgetExhausted ? "call budget exhausted before the final synthesis" : `final synthesis call failed (${describeModelError(e)})`;
+        synthesisFailure =
+          e instanceof BudgetExhausted ? "call budget exhausted before the final synthesis"
+          : e instanceof PlanExhausted ? "no planned call left for the final synthesis"
+          : `final synthesis call failed (${describeModelError(e)})`;
       }
     }
     const body: PostBody = { intro: [], sections: [] };
@@ -721,8 +760,7 @@ async function runLocked(
     const dekV = modelText(parsed?.dek, LIMITS.dek);
     const title = titleV.ok ? titleV.text : `What Charles said in ${monthLabel(opts.period)}`;
     const dek = dekV.ok ? dekV.text : null;
-    // The draft must itself be a valid operator document (export/import round-trips).
-    const self = validateEdit({ revision: 1, title, dek, body }, sources);
+    const self = validatePostContent({ title, dek, body }, sources);
     if (!self.ok) throw new Error(`generated draft failed validation: ${self.errors[0]}`);
 
     const coverage = coverageOf(noted.length);
@@ -749,7 +787,7 @@ async function runLocked(
           title = EXCLUDED.title, dek = EXCLUDED.dek, body = EXCLUDED.body, sources = EXCLUDED.sources,
           coverage = EXCLUDED.coverage, generation = EXCLUDED.generation, input_hash = EXCLUDED.input_hash,
           revision = posts.revision + 1, updated_at = now()
-        WHERE posts.status = 'draft' AND posts.edited_at IS NULL
+        WHERE posts.status = 'draft'
         RETURNING *, (xmax = 0) AS inserted
       `;
       if (!rows.length) return null;
@@ -761,7 +799,7 @@ async function runLocked(
     if (!written) {
       const kept = (await sql<Post[]>`SELECT * FROM posts WHERE kind = 'monthly' AND period = ${opts.period}`)[0];
       await finishRun(runId, "kept", calls, { reason: "post changed concurrently" });
-      return { status: "kept", post: kept, reason: "post was edited or published during generation; not overwritten", new_videos: [] };
+      return { status: "kept", post: kept, reason: "post was published during generation; not overwritten", new_videos: [] };
     }
     await finishRun(runId, written.inserted ? "created" : "updated", calls, { complete: coverage.complete, missing: missing.length });
     return { status: written.inserted ? "created" : "updated", post: written.post, calls };

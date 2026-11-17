@@ -1,6 +1,6 @@
 -- Rollback for 009. DESTRUCTIVE once posts exist: removes drafts, published
 -- posts and their provenance. Export first:
---   npx tsx src/cli/hosk.ts posts export <YYYY-MM> --out <file>
+--   npx tsx src/cli/hosk.ts posts preview <YYYY-MM> --format json --out <file>
 DROP TABLE IF EXISTS post_generation_budget;
 DROP TABLE IF EXISTS post_generation_runs;
 DROP TABLE IF EXISTS post_video_notes;

@@ -1,5 +1,5 @@
 /**
- * Post rendering shared by the blog pages, the RSS feed and the operator CLI.
+ * Post rendering shared by the blog pages and the operator CLI.
  * Post text is plain text; everything is escaped here. Links are built only
  * from validated YouTube ids and integer seconds taken from the database.
  */
@@ -107,34 +107,6 @@ export function postText(post: PublicPost, base: string): string {
     }
   }
   return lines.join("\n");
-}
-
-function paraHtml(p: PostParagraph, sources: PostSource[], base: string): string {
-  const cites = p.cites
-    .map((c) => resolveCite(c, sources, base))
-    .filter((c): c is CiteLink => !!c)
-    .map((c) => `<a href="${escapeHtml(c.href)}" title="${escapeHtml(c.title)}">[${escapeHtml(c.label)}]</a>`)
-    .join(" ");
-  return `<p>${escapeHtml(p.text)} ${cites}</p>`;
-}
-
-/** HTML fragment for the RSS feed's content:encoded, with absolute links. */
-export function postFeedHtml(post: PublicPost, base: string): string {
-  const parts: string[] = [];
-  if (post.dek) parts.push(`<p><em>${escapeHtml(post.dek)}</em></p>`);
-  parts.push(`<p><small>${escapeHtml(coverageSentence(post.coverage, post.period))}</small></p>`);
-  for (const p of post.body.intro) parts.push(paraHtml(p, post.sources, base));
-  for (const s of post.body.sections) {
-    parts.push(`<h3>${escapeHtml(s.heading)}</h3>`);
-    for (const p of s.paragraphs) parts.push(paraHtml(p, post.sources, base));
-  }
-  parts.push("<h3>Sources</h3><ol>");
-  for (const s of post.sources) {
-    if (!YOUTUBE_ID_RE.test(s.video_id)) continue;
-    parts.push(`<li><a href="${escapeHtml(videoHref(s.video_id, base))}">${escapeHtml(s.title)}</a> · ${escapeHtml(s.published_at.slice(0, 10))} · <a href="${escapeHtml(youtubeHref(s.video_id))}">YouTube</a></li>`);
-  }
-  parts.push("</ol>");
-  return parts.join("\n");
 }
 
 /**

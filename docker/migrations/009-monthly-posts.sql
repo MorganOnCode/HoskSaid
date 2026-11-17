@@ -1,7 +1,7 @@
 -- 009-monthly-posts.sql
 -- Monthly blog drafts generated from Charles's published videos (never from
 -- visitors' questions or external feeds). One logical post per (kind, period).
--- Generation only ever writes unedited drafts; publication and withdrawal are
+-- Generation only ever writes drafts; publication and withdrawal are
 -- explicit operator actions recorded in post_events.
 CREATE TABLE IF NOT EXISTS posts (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS posts (
   period       text NOT NULL CHECK (period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
   slug         text NOT NULL UNIQUE,
   status       text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'withdrawn')),
-  -- Bumped on every content change; edits and publication must name the
-  -- revision they were reviewed against.
+  -- Bumped on every content change; publication must name the revision it
+  -- was reviewed against.
   revision     integer NOT NULL DEFAULT 1 CHECK (revision >= 1),
   title        text NOT NULL,
   dek          text,
@@ -19,8 +19,6 @@ CREATE TABLE IF NOT EXISTS posts (
   coverage     jsonb NOT NULL,     -- public-safe completeness summary (period bounds, counts, missing videos)
   generation   jsonb NOT NULL,     -- private: model, limits, cutoff, calls, evidence-check rejections
   input_hash   text NOT NULL,
-  edited_at    timestamptz,
-  edited_by    text,
   published_at timestamptz,
   published_by text,
   withdrawn_at timestamptz,
@@ -35,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_published ON posts (published_at DESC) WHER
 CREATE TABLE IF NOT EXISTS post_events (
   id       bigserial PRIMARY KEY,
   post_id  uuid NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-  action   text NOT NULL CHECK (action IN ('generated', 'regenerated', 'edited', 'published', 'withdrawn')),
+  action   text NOT NULL CHECK (action IN ('generated', 'regenerated', 'published', 'withdrawn')),
   actor    text NOT NULL,
   revision integer NOT NULL,
   detail   jsonb,

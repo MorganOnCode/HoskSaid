@@ -1,14 +1,15 @@
 /**
  * Monthly drafts against an isolated fixture database with a fake model:
  * month windows, source selection, citation/evidence checks, coverage of busy
- * months, budgets, failures and retries, concurrency, strict edits, explicit
- * publication and public isolation. Nothing calls a provider.
+ * months, budgets, failures and retries, concurrency, explicit publication
+ * and public isolation. Nothing calls a provider.
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { SKIP_DB, createTestDb, seedVideo, type TestDb } from "./helpers/db";
 import { fakeDraftModel } from "./helpers/fake-draft-model";
 import { addMonths, monthWindow } from "../src/lib/digest/period";
+import { checkGrounding } from "../src/lib/digest/grounding";
 import type { Post } from "../src/lib/posts";
 
 const NOW = new Date("2026-11-15T00:00:00Z");
@@ -165,9 +166,9 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal(untimed.moments.length, 0);
     // Every surviving paragraph passes the evidence check against its cited text.
     for (const para of posts.allParagraphs(p.body)) assert.ok(para.cites.length > 0);
-    assert.deepEqual(posts.evidenceWarnings(p.body, p.sources), []);
-    // The draft round-trips through strict edit validation.
-    assert.ok(posts.validateEdit({ revision: p.revision, title: p.title, dek: p.dek, body: p.body }, p.sources).ok);
+    for (const para of posts.allParagraphs(p.body)) assert.ok(checkGrounding(para.text, posts.evidenceFor(para.cites, p.sources)).ok, para.text);
+    // The stored draft passes strict content validation.
+    assert.ok(posts.validatePostContent({ title: p.title, dek: p.dek, body: p.body }, p.sources).ok);
     // Provenance.
     const ev = await posts.postEvents(p.id);
     assert.deepEqual(ev.map((e) => [e.action, e.actor]), [["generated", "generator:cli"]]);
@@ -223,6 +224,70 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal(calls, r.calls, "every call was charged to the month's budget");
   });
 
+  test("plans bound execution even when every note and point carries maximum-length citations", async () => {
+    const VOCAB = "staking pool delegation governance treasury community funding ledger consensus protocol upgrade security".split(" ");
+    const fill = (n: number) => {
+      let t = "Charles said";
+      for (let i = 0; t.length < n; i++) t += ` ${VOCAB[i % VOCAB.length]}`;
+      return t.slice(0, n);
+    };
+    await db.sql`DELETE FROM videos WHERE published_at >= '2026-06-01' AND published_at < '2026-07-01'`;
+    for (let i = 1; i <= 10; i++) {
+      await seedVideo(db.sql, {
+        youtube_id: `JUNvideo${String(i).padStart(3, "0")}`,
+        title: `Packing talk ${String(i).padStart(2, "0")}`,
+        published_at: new Date(Date.UTC(2026, 5, i, 8)).toISOString(),
+        chunks: Array.from({ length: 16 }, (_, k) => ({ content: VOCAB.slice(k % 4).concat(VOCAB).join(" "), start: 10 * (k + 1) })),
+      });
+    }
+    const limits = { synthesisInputChars: 7_000, maxReduceLevels: 2, notesPerVideo: 4, noteChars: 100, reducePoints: 3 };
+    const longest = (user: string) =>
+      [...new Set([...user.matchAll(/\[([^\]"]+)\]/g)].flatMap((m) => m[1].split(", ")).filter((c) => /^S\d+(\.\d+)?$/.test(c)))]
+        .sort((a, b) => b.length - a.length || b.localeCompare(a))
+        .slice(0, 12);
+    const adversarial = (reduceReply?: () => unknown) =>
+      fakeDraftModel({
+        reply: (stage, user, def) => {
+          if (stage === "notes") return { notes: Array.from({ length: 4 }, () => ({ text: fill(limits.noteChars), cites: Array.from({ length: 12 }, (_, k) => `V.${16 - k}`) })) };
+          if (stage === "reduce") return reduceReply ? reduceReply() : { points: Array.from({ length: limits.reducePoints }, () => ({ text: fill(400), cites: longest(user) })) };
+          return def;
+        },
+      });
+
+    const dry = await gen({ period: "2026-06", dryRun: true, limits });
+    assert.equal(dry.status, "dry_run");
+    if (dry.status !== "dry_run") return;
+    const plan = dry.report.plan;
+    assert.ok(plan.feasible);
+    assert.equal(plan.notes_calls, 10);
+
+    const model = adversarial();
+    const r = await gen({ period: "2026-06", model, limits: { ...limits, maxCallsPerRun: plan.total_calls_max } });
+    assert.equal(r.status, "created", JSON.stringify(r).slice(0, 300));
+    if (r.status !== "created") return;
+    assert.ok(model.byStage("reduce") >= 1, "the notes did not fit one synthesis input");
+    assert.ok(model.byStage("reduce") <= plan.reduce_calls_max, `reduce ${model.byStage("reduce")} > planned ${plan.reduce_calls_max}`);
+    assert.ok(r.calls <= plan.total_calls_max, `calls ${r.calls} > planned ${plan.total_calls_max}`);
+    for (const c of model.calls.filter((x) => x.stage === "reduce")) assert.ok(c.user.length <= limits.synthesisInputChars + 10, `reduce input ${c.user.length}`);
+    const final = model.calls.find((x) => x.stage === "final")!;
+    assert.ok(final.user.split("--- NOTES ---\n\n")[1].length <= limits.synthesisInputChars, "final notes fit the synthesis input");
+    assert.equal(r.post.coverage.videos_covered, 10);
+
+    // A reduce that yields nothing usable can never push a run past its plan.
+    await db.sql`DELETE FROM posts`;
+    const cachedPlan = await gen({ period: "2026-06", dryRun: true, limits });
+    assert.ok(cachedPlan.status === "dry_run");
+    if (cachedPlan.status !== "dry_run") return;
+    const empty = adversarial(() => ({ points: [] }));
+    const failed = await gen({ period: "2026-06", model: empty, limits });
+    assert.equal(failed.status, "synthesis_failed");
+    if (failed.status === "synthesis_failed") {
+      assert.ok(failed.calls <= cachedPlan.report.plan.total_calls_max, `calls ${failed.calls} > planned ${cachedPlan.report.plan.total_calls_max}`);
+      assert.match(failed.reason, /more calls than planned|reduce levels/);
+    }
+    assert.equal(await count("posts"), 0);
+  });
+
   test("model failures: partial work is visible, cached, and retried without repaying", async () => {
     const flaky = fakeDraftModel({ fail: (stage, user) => stage === "notes" && user.includes("Hydra update") });
     const r = await gen({ model: flaky });
@@ -233,6 +298,26 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     const stored = JSON.stringify(r.post) + JSON.stringify(await db.sql`SELECT detail FROM post_generation_runs`);
     assert.ok(!stored.includes("sk-test-SECRET"), "provider error text is never stored");
     assert.ok(stored.includes("HTTP 401"));
+
+    // The same video fails again on a retry: no resynthesis, the reviewed revision stays valid.
+    const stillFlaky = fakeDraftModel({ fail: (stage, user) => stage === "notes" && user.includes("Hydra update") });
+    const retry = await gen({ model: stillFlaky });
+    assert.equal(retry.status, "unchanged");
+    assert.equal(stillFlaky.byStage("notes"), 1, "only the failed video is retried");
+    assert.equal(stillFlaky.byStage("final"), 0);
+    const kept = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(kept.revision, 1);
+    assert.deepEqual(kept.body, r.post.body);
+    const [retryRun] = await db.sql`SELECT outcome, calls, detail FROM post_generation_runs ORDER BY id DESC LIMIT 1`;
+    assert.equal(retryRun.outcome, "unchanged");
+    assert.equal(retryRun.calls, 1);
+    assert.ok(retryRun.detail.missing.some((m: { video_id: string; reason: string }) => m.video_id === "OCTvideo002" && m.reason === "model_failed"));
+    assert.ok(JSON.stringify(retryRun.detail.rejected).includes("HTTP 401"));
+    // Malformed output for that video is the same outcome.
+    const garbled = fakeDraftModel({ reply: (stage, user, def) => (stage === "notes" && user.includes("Hydra update") ? "not json" : def) });
+    assert.equal((await gen({ model: garbled })).status, "unchanged");
+    assert.equal(garbled.byStage("final"), 0);
+    assert.equal((await posts.getPostByPeriod("2026-10"))!.revision, 1);
 
     // Retry once the provider recovers: only the failed video's notes are requested.
     const ok = fakeDraftModel();
@@ -266,36 +351,32 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal(await count("posts"), 0);
   });
 
-  test("retries are idempotent; edited, published and withdrawn posts are never overwritten", async () => {
+  test("retries are idempotent; published and withdrawn posts are never overwritten", async () => {
     const model = fakeDraftModel();
     assert.equal((await gen({ model })).status, "created");
     const again = await gen({ model });
     assert.equal(again.status, "unchanged");
     assert.equal(model.calls.length, 5, "unchanged inputs skip every model call");
 
-    // Late ingestion changes the inputs: an unedited draft is regenerated in place.
+    // Late ingestion changes the inputs: a draft is regenerated in place.
     await seedVideo(db.sql, { youtube_id: "LATEvideo01", title: "Late", published_at: "2026-10-28T10:00:00Z", summary: "• Late thoughts on Midnight privacy." });
     const regen = await gen({ model });
     assert.equal(regen.status, "updated");
     assert.equal(model.byStage("notes"), 5, "only the new video's notes were requested");
     assert.equal(await count("posts"), 1);
 
-    // Operator edit: generation keeps it and reports what arrived since.
-    const current = (await posts.getPostByPeriod("2026-10"))!;
-    const edit = await posts.applyEdit("2026-10", { revision: current.revision, title: "Edited by hand", dek: current.dek, body: current.body }, "tester");
-    assert.ok(edit.ok);
+    // Published: generation keeps it and reports what arrived since.
+    const p = (await posts.getPostByPeriod("2026-10"))!;
+    assert.ok((await posts.publishPost("2026-10", { by: "tester", revision: p.revision, acceptIncomplete: true })).changed);
     await seedVideo(db.sql, { youtube_id: "LATEvideo02", title: "Later", published_at: "2026-10-29T10:00:00Z", summary: "• Later." });
     const kept = await gen({ model });
     assert.equal(kept.status, "kept");
     if (kept.status === "kept") assert.deepEqual(kept.new_videos, ["LATEvideo02"]);
-    assert.equal((await posts.getPostByPeriod("2026-10"))?.title, "Edited by hand");
-
-    const p = (await posts.getPostByPeriod("2026-10"))!;
-    assert.ok((await posts.publishPost("2026-10", { by: "tester", revision: p.revision, acceptIncomplete: true })).changed);
-    assert.equal((await gen({ model })).status, "kept");
     await posts.withdrawPost("2026-10", "tester");
     assert.equal((await gen({ model })).status, "kept");
-    assert.equal((await posts.getPostByPeriod("2026-10"))?.title, "Edited by hand");
+    const after = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(after.revision, p.revision);
+    assert.deepEqual(after.body, p.body);
     await db.sql`DELETE FROM videos WHERE youtube_id IN ('LATEvideo01', 'LATEvideo02')`;
   });
 
@@ -308,28 +389,23 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal(await count("posts"), 1);
     assert.equal(a.calls.length + b.calls.length, 5);
 
-    // A concurrent edit during generation wins: the generator does not overwrite it.
+    // A publication during generation wins: the generator does not overwrite it.
     await db.sql`DELETE FROM posts`;
     await db.sql`DELETE FROM post_video_notes`;
     assert.equal((await gen()).status, "created");
     await seedVideo(db.sql, { youtube_id: "RACEvideo01", title: "Race", published_at: "2026-10-27T10:00:00Z", summary: "• Racing condition talk." });
-    let edited = false;
-    const slow = fakeDraftModel({
-      reply: (stage, _u, def) => {
-        if (stage === "final" && !edited) edited = true;
-        return def;
-      },
-      delayMs: 30,
-    });
+    const slow = fakeDraftModel({ delayMs: 30 });
     const genP = gen({ model: slow });
-    // Edit lands while the generator is calling the model.
+    // Publication lands while the generator is calling the model.
     await new Promise((r) => setTimeout(r, 20));
     const cur = (await posts.getPostByPeriod("2026-10"))!;
-    const e = await posts.applyEdit("2026-10", { revision: cur.revision, title: "Human title", dek: cur.dek, body: cur.body }, "editor");
-    assert.ok(e.ok);
+    assert.ok((await posts.publishPost("2026-10", { by: "firstmate", revision: cur.revision, acceptIncomplete: true })).changed);
     const res = await genP;
     assert.equal(res.status, "kept");
-    assert.equal((await posts.getPostByPeriod("2026-10"))?.title, "Human title");
+    const published = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(published.status, "published");
+    assert.equal(published.revision, cur.revision);
+    assert.deepEqual(published.body, cur.body);
 
     // Budget reservations are atomic under parallel callers.
     await db.sql`DELETE FROM videos WHERE youtube_id = 'RACEvideo01'`;
@@ -342,46 +418,6 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     const [{ calls }] = await db.sql`SELECT calls FROM post_generation_budget WHERE period = '2026-10'`;
     assert.ok(calls <= 5, `charged ${calls}`);
     assert.equal(results.filter((x) => x.status === "created").length, 1);
-  });
-
-  test("edits: strict rejection, stale revisions refused, nothing silently dropped", async () => {
-    const r = await gen();
-    assert.equal(r.status, "created");
-    const p = (await posts.getPostByPeriod("2026-10"))!;
-    const before = JSON.stringify(p.body);
-    const doc = { revision: p.revision, title: p.title, dek: p.dek, body: structuredClone(p.body) };
-
-    const long = structuredClone(doc);
-    long.body.intro[0].text = "word ".repeat(400).trim();
-    const r1 = await posts.applyEdit("2026-10", long, "ed");
-    assert.equal(r1.ok, false);
-    if (!r1.ok) assert.ok(r1.errors?.some((x) => /exceeds the 1500 limit/.test(x)));
-
-    const tooMany = structuredClone(doc);
-    tooMany.body.sections = Array.from({ length: 13 }, () => p.body.sections[0]);
-    assert.equal((await posts.applyEdit("2026-10", tooMany, "ed")).ok, false);
-
-    const badCite = structuredClone(doc);
-    badCite.body.intro[0].cites = ["S42"];
-    assert.equal((await posts.applyEdit("2026-10", badCite, "ed")).ok, false);
-
-    assert.equal(JSON.stringify((await posts.getPostByPeriod("2026-10"))!.body), before, "rejected edits change nothing");
-
-    // A valid edit applies whole, bumps the revision and records provenance.
-    const good = structuredClone(doc);
-    good.body.intro[0].text = "An editor rewrote this introduction.";
-    const ok = await posts.applyEdit("2026-10", good, "editor-1");
-    assert.ok(ok.ok);
-    if (ok.ok) {
-      assert.equal(ok.post.revision, p.revision + 1);
-      assert.equal(ok.post.edited_by, "editor-1");
-      assert.equal(ok.post.body.intro[0].text, "An editor rewrote this introduction.");
-      assert.ok(ok.warnings.some((w) => /body\.intro\[0\]/.test(w)), "edited wording is flagged against the evidence");
-    }
-    // Re-applying the same (now stale) export is refused rather than overwriting.
-    const stale = await posts.applyEdit("2026-10", good, "editor-2");
-    assert.equal(stale.ok, false);
-    if (!stale.ok) assert.match(stale.error, /revision mismatch/);
   });
 
   test("publication is explicit, revision-pinned, and drafts stay private", async () => {
@@ -411,10 +447,6 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.ok(listed.every((x) => !("generation" in x)));
     assert.equal(await posts.getPublishedPost("../../etc"), null);
 
-    // Published posts cannot be edited in place.
-    const e = await posts.applyEdit("2026-10", { revision: p.revision, title: "x", dek: null, body: p.body }, "ed");
-    assert.equal(e.ok, false);
-
     const w = await posts.withdrawPost("2026-10", "firstmate");
     assert.ok(w.changed);
     assert.equal(await posts.getPublishedPost("2026-10"), null);
@@ -424,30 +456,22 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.deepEqual(ev.map((x) => `${x.action}:${x.actor}`), ["generated:generator:cli", "published:firstmate", "withdrawn:firstmate"]);
   });
 
-  test("public feed and pages expose only published posts, escaped", async () => {
+  test("public reads expose only published posts and no mutation route exists", async () => {
     await gen({
-      model: fakeDraftModel({ reply: (s, _u, d) => (s === "final" ? { ...(d as object), title: "Draft <i>secret</i> title" } : d) }),
+      model: fakeDraftModel({ reply: (s, _u, d) => (s === "final" ? { ...(d as object), title: "Draft secret title" } : d) }),
     });
-    const feed = await import("../src/app/blog/feed.xml/route");
-    const draftXml = await (await feed.GET()).text();
-    assert.ok(!draftXml.includes("secret"), "draft is not in the feed");
-    assert.ok(!draftXml.includes("<item>"));
+    assert.equal((await posts.listPublishedPosts()).length, 0, "the draft is not listed");
+    assert.equal(await posts.getPublishedPost("2026-10"), null);
 
     const p = (await posts.getPostByPeriod("2026-10"))!;
     await posts.publishPost("2026-10", { by: "ed", revision: p.revision, acceptIncomplete: true });
-    const xml = await (await feed.GET()).text();
-    assert.match(xml, /<title>Draft &lt;i&gt;secret&lt;\/i&gt; title<\/title>/);
-    assert.ok(!xml.includes("<b>bold</b>"), "source markup is escaped in content");
-    assert.match(xml, /\/video\/OCTvideo001\?t=125/);
-    assert.ok(!xml.includes("t=9000"));
-    assert.ok(!/generator|fake-1|prompt_version|input_hash/.test(xml), "no private generation metadata");
-    assert.match(xml, /Covers 4 of 6 videos published in October 2026 \(UTC\); 2 not included\./);
+    const [listed] = await posts.listPublishedPosts();
+    assert.equal(listed.title, "Draft secret title");
+    assert.ok(!/generator|fake-1|prompt_version|input_hash/.test(JSON.stringify(listed)), "no private generation metadata");
 
-    // Route surface: the blog has no mutation handlers.
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("src/app/blog", { recursive: true }).map(String);
-    assert.deepEqual(files.filter((f) => /route\.ts$/.test(f)), ["feed.xml/route.ts"]);
-    for (const m of ["POST", "PUT", "PATCH", "DELETE"]) assert.equal((feed as Record<string, unknown>)[m], undefined);
+    assert.deepEqual(files.filter((f) => /route\.ts$/.test(f)), [], "the blog has no route handlers");
     const apiFiles = readdirSync("src/app/api", { recursive: true }).map(String);
     assert.ok(!apiFiles.some((f) => /post|blog|publish/i.test(f)), "no API route touches posts");
   });

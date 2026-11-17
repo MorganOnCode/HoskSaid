@@ -1,10 +1,8 @@
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { parseArgs, UsageError } from "../args";
 import { CliError, emit, emitHelp, RUN, type Command } from "../runtime";
 import {
-  LIMITS,
   OPERATOR_RE,
-  applyEdit,
   getPostByPeriod,
   listPosts,
   paragraphCount,
@@ -31,15 +29,12 @@ const USAGE: Record<string, string> = {
   generate: `${P} generate --month <YYYY-MM|previous> [--timezone <IANA>] [--min-videos <n>] [--dry-run]
   Drafts one closed month from Charles's published videos (never visitor questions).
   Needs OPENAI_API_KEY and MONTHLY_DRAFT_CALL_BUDGET unless --dry-run. Never publishes.
-  Re-running replaces only an unedited draft; timezone defaults to MONTHLY_DRAFT_TIMEZONE, else UTC.
+  Re-running replaces only a draft (never a published or withdrawn post); timezone defaults to MONTHLY_DRAFT_TIMEZONE, else UTC.
   examples:
     ${P} generate --month previous --dry-run
     ${P} generate --month 2026-10 --timezone UTC`,
   preview: `${P} preview <YYYY-MM> [--format text|html|json] [--out <file>]
   text: reading copy. html: private review page with cited evidence, coverage and rejected statements.`,
-  export: `${P} export <YYYY-MM> --out <file.json>   (edit title/dek/body, keep "revision", then import)`,
-  import: `${P} import <YYYY-MM> --file <file.json> --by <operator>
-  Strict: invalid, oversized or stale (wrong revision) edits are rejected whole, never trimmed.`,
   publish: `${P} publish <YYYY-MM> --by <operator> --revision <n> [--accept-incomplete]
   Publishes exactly the reviewed revision. An incomplete month needs --accept-incomplete.`,
   withdraw: `${P} withdraw <YYYY-MM> --by <operator>   (unpublish; the post is kept)`,
@@ -55,8 +50,6 @@ const SPEC: Record<string, Record<string, "boolean" | "string">> = {
   show: { full: "boolean" },
   generate: { month: "string", timezone: "string", "min-videos": "string", "dry-run": "boolean" },
   preview: { format: "string", out: "string" },
-  export: { out: "string" },
-  import: { file: "string", by: "string" },
   publish: { by: "string", revision: "string", "accept-incomplete": "boolean" },
   withdraw: { by: "string" },
   schedule: { once: "boolean", "dry-run": "boolean", now: "string" },
@@ -70,7 +63,6 @@ function brief(p: Post) {
     title: p.title,
     coverage: `${p.coverage.videos_covered}/${p.coverage.videos_in_period} videos${p.coverage.complete ? " (complete)" : " (INCOMPLETE)"}`,
     paragraphs: paragraphCount(p.body),
-    edited: p.edited_at ? `${p.edited_by ?? "?"} ${new Date(p.edited_at).toISOString()}` : "no",
     published: p.published_at ? `${p.published_by ?? "?"} ${new Date(p.published_at).toISOString()}` : "no",
   };
 }
@@ -153,7 +145,7 @@ function emitResult(r: MonthlyResult, period: string): number {
       emit({ generate: "kept (no-op)", period, reason: r.reason, new_videos_since: r.new_videos.length ? r.new_videos : "none", post: brief(r.post) });
       return 0;
     case "unchanged":
-      emit({ generate: "unchanged (no-op): inputs identical to the existing draft", post: brief(r.post) });
+      emit({ generate: "unchanged (no-op): the existing draft already reflects these inputs", calls: r.calls, post: brief(r.post) });
       return 0;
     default:
       emit({
@@ -255,7 +247,7 @@ async function scheduleCommand(positionals: string[], flags: Record<string, stri
 
 export const postsCommand: Command = {
   name: "posts",
-  summary: "Monthly blog drafts: generate, review, edit, publish/withdraw (explicit only), schedule",
+  summary: "Monthly blog drafts: generate, review, publish/withdraw (explicit only), schedule",
   usage: ALL_USAGE,
   async run(argv) {
     const sub = argv[0] && !argv[0].startsWith("--") ? argv[0] : "list";
@@ -354,48 +346,6 @@ export const postsCommand: Command = {
         } else {
           process.stdout.write(out + "\n");
         }
-        return 0;
-      }
-      case "export": {
-        const post = await mustGet(requirePeriod(positionals, usage));
-        if (typeof flags.out !== "string") throw new UsageError("--out <file.json> is required", usage);
-        const doc = {
-          revision: post.revision,
-          title: post.title,
-          dek: post.dek,
-          body: post.body,
-          _reference: { note: "ignored on import; cite ids from sources", coverage: post.coverage, sources: post.sources },
-        };
-        writeFileSync(flags.out, JSON.stringify(doc, null, 2) + "\n");
-        emit({ export: `wrote ${flags.out}`, status: post.status, revision: post.revision });
-        emitHelp([`Edit title, dek or body (every paragraph keeps at least one valid cite), then \`${P} import ${post.period} --file ${flags.out} --by <operator>\``]);
-        return 0;
-      }
-      case "import": {
-        const period = requirePeriod(positionals, usage);
-        const by = requireBy(flags, usage);
-        if (typeof flags.file !== "string") throw new UsageError("--file <file.json> is required", usage);
-        let size: number;
-        try {
-          size = statSync(flags.file).size;
-        } catch {
-          throw new CliError(`cannot read ${flags.file}`);
-        }
-        if (size > LIMITS.editBytes) throw new CliError(`edit rejected: ${flags.file} is ${size} bytes; the limit is ${LIMITS.editBytes}`);
-        let edit: unknown;
-        try {
-          edit = JSON.parse(readFileSync(flags.file, "utf8"));
-        } catch {
-          throw new CliError(`edit rejected: ${flags.file} is not valid JSON`);
-        }
-        const r = await applyEdit(period, edit, by);
-        if (!r.ok) {
-          emit({ error: `edit rejected: ${r.error}`, ...(r.errors ? { errors: r.errors.slice(0, 40), ...(r.errors.length > 40 ? { more_errors: r.errors.length - 40 } : {}) } : {}) });
-          emitHelp([`Run \`${P} export ${period} --out <file>\` for a valid starting point; nothing was changed`]);
-          return 1;
-        }
-        emit({ import: "applied", post: brief(r.post), evidence_warnings: r.warnings.length ? r.warnings : "none" });
-        emitHelp([`Run \`${P} publish ${period} --by <operator> --revision ${r.post.revision}\` once approved`]);
         return 0;
       }
       case "publish": {

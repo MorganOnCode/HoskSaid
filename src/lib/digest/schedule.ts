@@ -8,8 +8,8 @@
  * The last MONTHLY_SCHEDULE_CATCHUP_MONTHS closed months are considered, so a
  * scheduler that was down on the day catches up when it next runs. A month
  * checked within MONTHLY_SCHEDULE_RECHECK_HOURS is skipped; otherwise the
- * generator runs again, which is a no-op for unchanged, edited, published or
- * withdrawn posts and picks up late-ingested videos in an unedited draft.
+ * generator runs again, which is a no-op for unchanged, published or withdrawn
+ * posts and picks up late-ingested videos in a draft.
  *
  * Disabled unless MONTHLY_DRAFTS_SCHEDULE_ENABLED=true. It only drafts: it
  * never publishes and never sends email.
@@ -118,7 +118,7 @@ function summarise(r: MonthlyResult): string {
     case "kept":
       return `${r.reason}${r.new_videos.length ? `; ${r.new_videos.length} video(s) published since are not in it` : ""}`;
     case "unchanged":
-      return `inputs unchanged (revision ${r.post.revision})`;
+      return `inputs unchanged (revision ${r.post.revision}${r.calls ? `, ${r.calls} retry call(s)` : ""})`;
     case "dry_run":
       return "dry run";
     default:
