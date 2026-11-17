@@ -140,5 +140,46 @@ services:
       && npx tsx src/scripts/enrich.ts --limit=50 \
       && npx tsx src/scripts/generate-embeddings.ts --limit=50
 
+  # Monthly blog DRAFTS (opt-in; inactive by default). Two switches are both
+  # required: start this profile AND set MONTHLY_DRAFTS_SCHEDULE_ENABLED=true.
+  #   docker compose -f docker-compose.prod.yml --profile monthly-drafts up -d monthly-drafts
+  # It checks hourly and drafts each closed month on MONTHLY_SCHEDULE_DAY at
+  # MONTHLY_SCHEDULE_HOUR (local to MONTHLY_DRAFT_TIMEZONE), catching up missed
+  # months. It needs an explicit MONTHLY_DRAFT_CALL_BUDGET (model calls per
+  # month) and OPENAI_API_KEY. It never publishes and never sends email:
+  # publication is `posts publish --by <operator> --revision <n>`.
+  # Disabled config exits 0 (stays stopped); missing config exits 78.
+  monthly-drafts:
+    image: hosksaid:latest
+    container_name: hosksaid-monthly-drafts
+    profiles: ["monthly-drafts"]   # excluded from default `up`
+    restart: on-failure:3
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-hosksaid}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hosksaid}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://thehosksaid.com}
+      MONTHLY_DRAFTS_SCHEDULE_ENABLED: ${MONTHLY_DRAFTS_SCHEDULE_ENABLED:-false}
+      # UTC is the development default until the production zone is confirmed.
+      MONTHLY_DRAFT_TIMEZONE: ${MONTHLY_DRAFT_TIMEZONE:-UTC}
+      MONTHLY_DRAFT_MODEL: ${MONTHLY_DRAFT_MODEL:-gpt-4o-mini}
+      MONTHLY_DRAFT_CALL_BUDGET: ${MONTHLY_DRAFT_CALL_BUDGET:-}
+      MONTHLY_SCHEDULE_DAY: ${MONTHLY_SCHEDULE_DAY:-1}
+      MONTHLY_SCHEDULE_HOUR: ${MONTHLY_SCHEDULE_HOUR:-6}
+      MONTHLY_SCHEDULE_CATCHUP_MONTHS: ${MONTHLY_SCHEDULE_CATCHUP_MONTHS:-2}
+      MONTHLY_SCHEDULE_RECHECK_HOURS: ${MONTHLY_SCHEDULE_RECHECK_HOURS:-24}
+      MONTHLY_SCHEDULE_CHECK_MINUTES: ${MONTHLY_SCHEDULE_CHECK_MINUTES:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "tsx", "src/cli/hosk.ts", "posts", "schedule", "run"]
+    mem_limit: 384m
+    cpus: 0.5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   postgres_data:

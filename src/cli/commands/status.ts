@@ -18,6 +18,11 @@ export async function homeSummary(): Promise<Record<string, unknown>> {
       const u = await usageToday();
       out.site_calls_today = `answers ${u.answer.used}/${u.answer.cap}, embeddings ${u.embedding.used}/${u.embedding.cap}`;
     }
+    if (await has("public.posts")) {
+      const rows = await sql<{ status: string; n: number }[]>`SELECT status, count(*)::int AS n FROM posts GROUP BY status`;
+      const by = new Map(rows.map((r) => [r.status, r.n]));
+      out.monthly_posts = `${by.get("draft") ?? 0} draft, ${by.get("published") ?? 0} published, ${by.get("withdrawn") ?? 0} withdrawn`;
+    }
     return out;
   } catch (e) {
     return { database: "unreachable", detail: e instanceof Error ? e.message.split("\n")[0].slice(0, 120) : "unknown" };
