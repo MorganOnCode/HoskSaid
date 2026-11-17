@@ -4,7 +4,7 @@ import { askArchive } from "@/lib/retrieval";
 import {
   searchSegments, getVideoApi, getTranscriptApi, getSegmentApi, listVideosApi, listTopicsApi,
 } from "@/lib/api";
-import { rateLimited } from "@/lib/ratelimit";
+import { clientIdentity, rateLimited } from "@/lib/ratelimit";
 import { readJsonBody } from "@/lib/body";
 import {
   DEFAULT_SEARCH_LIMIT, MAX_MCP_BATCH, MAX_MCP_BODY_BYTES, MAX_SEARCH_LIMIT, clampInt, isYoutubeId,
@@ -34,9 +34,12 @@ function requireVideoId(a: Args): string {
   return a.video_id;
 }
 
-/** Tool implementations → plain JSON (wrapped as MCP text content by the caller). */
-const TOOLS: Record<string, (a: Args) => Promise<unknown>> = {
-  search_archive: async (a) => {
+/**
+ * Tool implementations → plain JSON (wrapped as MCP text content by the caller).
+ * `client` is the caller's limiter identity, charged for paid tools.
+ */
+const TOOLS: Record<string, (a: Args, client: string) => Promise<unknown>> = {
+  search_archive: async (a, client) => {
     const query = requireQuery(a);
     const f = validateFilters(a.filters);
     if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
@@ -44,6 +47,7 @@ const TOOLS: Record<string, (a: Args) => Promise<unknown>> = {
       throw new ToolInputError("with_citations must be a boolean");
     }
     const result = await askArchive(query, f.value.scope, f.value.filters, {
+      client,
       withCitations: a.with_citations ?? true,
       persist: true,
     });
@@ -53,7 +57,7 @@ const TOOLS: Record<string, (a: Args) => Promise<unknown>> = {
     }
     return result;
   },
-  search_segments: async (a) => {
+  search_segments: async (a, client) => {
     const query = requireQuery(a);
     const videoId = a.video_id === undefined ? undefined : requireVideoId(a);
     const f = validateFilters({
@@ -62,6 +66,7 @@ const TOOLS: Record<string, (a: Args) => Promise<unknown>> = {
     });
     if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
     return searchSegments(query, {
+      client,
       limit: clampInt(a.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
       videoId,
       from: f.value.scope.from,
@@ -92,7 +97,7 @@ function isRpcObject(m: unknown): m is RpcReq {
   return !!m && typeof m === "object" && !Array.isArray(m);
 }
 
-async function dispatch(msg: unknown): Promise<object | null> {
+async function dispatch(msg: unknown, client: string): Promise<object | null> {
   if (!isRpcObject(msg)) return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
   const id = msg.id ?? null;
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
@@ -125,7 +130,7 @@ async function dispatch(msg: unknown): Promise<object | null> {
         return toolError("arguments must be an object");
       }
       try {
-        const data = await impl((args || {}) as Args);
+        const data = await impl((args || {}) as Args, client);
         return reply({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }], isError: false });
       } catch (e) {
         if (e instanceof ToolInputError) return toolError(`Invalid arguments: ${e.message}`);
@@ -148,7 +153,8 @@ async function dispatch(msg: unknown): Promise<object | null> {
  * Bounds: body <= 64 KiB, at most 8 JSON-RPC messages per POST, each message
  * charged to the caller's rate limit, and messages handled one at a time so a
  * batch never fans out into parallel paid calls. Paid tools are additionally
- * bound by the site's daily caps and concurrency gate.
+ * bound by the caller's per-client daily allowance, the site's daily caps and
+ * the concurrency gate.
  */
 export async function POST(request: NextRequest) {
   const parsed = await readJsonBody(request, MAX_MCP_BODY_BYTES);
@@ -171,9 +177,10 @@ export async function POST(request: NextRequest) {
   const limited = rateLimited(request, messages.length);
   if (limited) return limited;
 
+  const client = clientIdentity(request);
   const responses: object[] = [];
   for (const m of messages) {
-    const r = await dispatch(m);
+    const r = await dispatch(m, client);
     if (r) responses.push(r);
   }
 

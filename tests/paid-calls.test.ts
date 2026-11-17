@@ -63,15 +63,20 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
     fake.calls.chat = 0;
     fake.calls.maxConcurrentChat = 0;
     fake.chatDelayMs = 0;
-    delete process.env.SITE_DAILY_ANSWER_CAP;
-    delete process.env.SITE_DAILY_EMBEDDING_CAP;
+    for (const name of ["SITE_DAILY_ANSWER_CAP", "SITE_DAILY_EMBEDDING_CAP", "CLIENT_DAILY_ANSWER_CAP", "CLIENT_DAILY_EMBEDDING_CAP", "TRUST_CLOUDFLARE_IP", "HOSK_API_KEYS"]) {
+      delete process.env[name];
+    }
     await db.sql`DELETE FROM site_usage_daily`;
+    await db.sql`DELETE FROM client_usage_daily`;
     await db.sql`DELETE FROM answers`;
   });
 
   const mcpCall = (id: number, query: string, tool = "search_archive") => ({
     jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: { query } },
   });
+  const fromIp = (ip: string) => ({ "cf-connecting-ip": ip });
+  const siteCalls = async (kind: string) =>
+    (await db.sql<{ calls: number }[]>`SELECT calls FROM site_usage_daily WHERE kind = ${kind}`)[0]?.calls ?? 0;
 
   test("MCP batch above the cap is rejected before any paid call", async () => {
     const batch = Array.from({ length: 9 }, (_x, i) => mcpCall(i, `question ${i}`));
@@ -214,13 +219,17 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
   test("absent cap config uses conservative defaults, never unlimited", () => {
     assert.equal(usage.dailyCap("answer"), usage.DEFAULT_DAILY_CAPS.answer);
     assert.equal(usage.dailyCap("embedding"), usage.DEFAULT_DAILY_CAPS.embedding);
+    for (const kind of ["answer", "embedding"] as const) {
+      assert.equal(usage.clientDailyCap(kind), usage.DEFAULT_CLIENT_DAILY_CAPS[kind]);
+      assert.ok(usage.clientDailyCap(kind) < usage.dailyCap(kind), "one client's default allowance is below the site cap");
+    }
     process.env.SITE_DAILY_ANSWER_CAP = "lots";
     assert.equal(usage.dailyCap("answer"), usage.DEFAULT_DAILY_CAPS.answer);
   });
 
   test("cap reservation is concurrency-safe (50 parallel reservations, cap 10)", async () => {
     process.env.SITE_DAILY_EMBEDDING_CAP = "10";
-    const results = await Promise.allSettled(Array.from({ length: 50 }, () => usage.reserveSiteCalls("embedding")));
+    const results = await Promise.allSettled(Array.from({ length: 50 }, () => usage.reserveSiteCalls("embedding", "ip:203.0.113.1")));
     assert.equal(results.filter((r) => r.status === "fulfilled").length, 10);
     assert.ok(results.filter((r) => r.status === "rejected").every((r) => (r as PromiseRejectedResult).reason instanceof usage.BudgetExceededError));
     const [row] = await db.sql<{ calls: number }[]>`SELECT calls FROM site_usage_daily WHERE kind = 'embedding'`;
@@ -276,6 +285,114 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
     }
     const rows = await db.sql<{ question: string }[]>`SELECT question FROM answers ORDER BY created_at`;
     assert.deepEqual(rows.map((r) => r.question), ["persist me"]);
+  });
+
+  test("per-client answer allowance isolates clients; refused requests pay nothing and leave the site budget alone", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.CLIENT_DAILY_ANSWER_CAP = "2";
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await askRoute.POST(post("/api/ask", { query: `client a question ${i}` }, fromIp("203.0.113.10")));
+      statuses.push(res.status);
+      if (res.status === 429) {
+        const body = await res.json();
+        assert.equal(body.error, "client_quota_exhausted");
+        assert.equal(body.budget, "answer");
+        assert.ok(Number(res.headers.get("retry-after")) > 0);
+      }
+    }
+    assert.deepEqual(statuses, [200, 200, 429, 429]);
+    const other = await askRoute.POST(post("/api/ask", { query: "client b question" }, fromIp("203.0.113.20")));
+    assert.equal(other.status, 200, "another client keeps its own allowance");
+    assert.equal(fake.calls.chat, 3);
+    assert.equal(fake.calls.embeddings, 3, "a refused client pays for no retrieval either");
+    assert.equal(await siteCalls("answer"), 3);
+    assert.equal(await siteCalls("embedding"), 3);
+  });
+
+  test("the site cap still bounds the total across clients", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.SITE_DAILY_ANSWER_CAP = "3";
+    process.env.CLIENT_DAILY_ANSWER_CAP = "2";
+    const plan = ["198.51.100.1", "198.51.100.1", "198.51.100.2", "198.51.100.2", "198.51.100.3"];
+    const results: [number, string | undefined][] = [];
+    for (const [i, ip] of plan.entries()) {
+      const res = await askRoute.POST(post("/api/ask", { query: `site cap question ${i}` }, fromIp(ip)));
+      results.push([res.status, res.status === 200 ? undefined : (await res.json()).error]);
+    }
+    assert.deepEqual(results, [
+      [200, undefined], [200, undefined], [200, undefined],
+      [503, "site_budget_exhausted"], [503, "site_budget_exhausted"],
+    ]);
+    assert.equal(fake.calls.chat, 3);
+    assert.equal(await siteCalls("answer"), 3);
+  });
+
+  test("client and site reservations are atomic under concurrency", async () => {
+    process.env.SITE_DAILY_EMBEDDING_CAP = "10";
+    process.env.CLIENT_DAILY_EMBEDDING_CAP = "3";
+    const clients = Array.from({ length: 5 }, (_x, i) => `ip:192.0.2.${i + 1}`);
+    const attempts = clients.flatMap((c) => Array.from({ length: 6 }, () => usage.reserveSiteCalls("embedding", c).then(() => c)));
+    const results = await Promise.allSettled(attempts);
+    const won = results.filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled").map((r) => r.value);
+    assert.equal(won.length, 10, "the site cap is never exceeded");
+    for (const c of clients) assert.ok(won.filter((w) => w === c).length <= 3, `${c} exceeded its allowance`);
+    assert.ok(results.every((r) => r.status === "fulfilled" || r.reason instanceof usage.BudgetExceededError));
+    assert.equal(await siteCalls("embedding"), 10);
+    const [{ total }] = await db.sql<{ total: number }[]>`SELECT COALESCE(SUM(calls), 0)::int AS total FROM client_usage_daily WHERE kind = 'embedding'`;
+    assert.equal(total, 10, "a reservation refused by the site cap leaves no client charge behind");
+  });
+
+  test("allowances reset at 00:00 UTC and earlier days' client rows are purged", async () => {
+    process.env.CLIENT_DAILY_ANSWER_CAP = "1";
+    const late = new Date("2026-03-01T23:59:59Z");
+    const early = new Date("2026-03-02T00:00:01Z");
+    await usage.reserveSiteCalls("answer", "ip:192.0.2.77", 1, late);
+    await assert.rejects(
+      usage.reserveSiteCalls("answer", "ip:192.0.2.77", 1, late),
+      (e) => e instanceof usage.BudgetExceededError && e.scope === "client"
+    );
+    await usage.reserveSiteCalls("answer", "ip:192.0.2.77", 1, early);
+    const days = await db.sql<{ day: string }[]>`SELECT DISTINCT day::text AS day FROM client_usage_daily`;
+    assert.deepEqual(days.map((d) => d.day), ["2026-03-02"]);
+  });
+
+  test("one client's embedding allowance is shared by search, MCP and Ask", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.CLIENT_DAILY_EMBEDDING_CAP = "2";
+    const me = fromIp("203.0.113.50");
+    const s = await searchRoute.GET(new NextRequest("http://localhost/api/search?q=first+query", { headers: me }));
+    assert.equal(s.status, 200);
+    const m = await (await mcpRoute.POST(post("/mcp", mcpCall(1, "second query", "search_segments"), me))).json();
+    assert.equal(m.result.isError, false);
+
+    const a = await askRoute.POST(post("/api/ask", { query: "third query" }, me));
+    assert.equal(a.status, 429);
+    const ab = await a.json();
+    assert.equal(ab.error, "client_quota_exhausted");
+    assert.equal(ab.budget, "embedding");
+    const m2 = await (await mcpRoute.POST(post("/mcp", mcpCall(2, "fourth query"), me))).json();
+    assert.equal(m2.result.isError, true);
+    assert.equal(JSON.parse(m2.result.content[0].text).error, "client_quota_exhausted");
+
+    const other = await askRoute.POST(post("/api/ask", { query: "third query" }, fromIp("203.0.113.51")));
+    assert.equal(other.status, 200);
+    assert.equal(fake.calls.embeddings, 3);
+    assert.equal(fake.calls.chat, 1);
+  });
+
+  test("stored client identifiers contain neither the IP nor the API key", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.HOSK_API_KEYS = "hk-test-secret-key";
+    const anon = await askRoute.POST(post("/api/ask", { query: "identity question one" }, fromIp("203.0.113.99")));
+    const keyed = await askRoute.POST(post("/api/ask", { query: "identity question two" }, { authorization: "Bearer hk-test-secret-key" }));
+    assert.equal(anon.status, 200);
+    assert.equal(keyed.status, 200);
+    const rows = await db.sql<{ client: string }[]>`SELECT DISTINCT client FROM client_usage_daily`;
+    assert.equal(rows.length, 2, "the anonymous and keyed callers are separate clients");
+    for (const { client } of rows) {
+      assert.ok(!client.includes("203.0.113.99") && !client.includes("hk-test-secret-key"), client);
+    }
   });
 
   test("Ask body above 16 KiB and wrong content type are refused", async () => {

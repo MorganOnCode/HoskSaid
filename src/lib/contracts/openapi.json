@@ -123,7 +123,7 @@
             "description": "Empty/unanswerable — no transcript segment matched. Returns { matched: 0, suggestions: [] }."
           },
           "429": {
-            "description": "Rate limited. Retry-After header set."
+            "description": "rate_limited, or client_quota_exhausted (your per-client daily allowance is used up; `budget` is `answer` or `embedding`; resets 00:00 UTC). Retry-After header set."
           },
           "400": {
             "description": "Invalid input: query_required, query_too_long, invalid_filters or invalid_body."
@@ -190,6 +190,9 @@
         "responses": {
           "200": {
             "description": "Ranked segments."
+          },
+          "429": {
+            "description": "rate_limited, or client_quota_exhausted (`budget`: `embedding`; resets 00:00 UTC). Retry-After header set."
           },
           "503": {
             "description": "site_budget_exhausted (`budget`: `embedding`) or busy."

@@ -1,21 +1,17 @@
 /** Migration runner: ordering, ledger, idempotence, no-transaction files. */
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { SKIP_DB, createTestDb, type TestDb } from "./helpers/db";
 import { applyMigrations, invalidIndexes, loadMigrationFiles, migrationStatus } from "../src/lib/migrations";
 
 describe("migration runner", () => {
-  test("files are ordered, uniquely versioned, and CONCURRENTLY only appears in no-transaction files", () => {
-    const files = loadMigrationFiles();
-    const versions = files.map((f) => f.version);
+  test("files are ordered and uniquely versioned", () => {
+    const versions = loadMigrationFiles().map((f) => f.version);
     assert.deepEqual(versions, [...versions].sort());
     assert.equal(new Set(versions).size, versions.length);
-    for (const f of files) {
-      if (/CONCURRENTLY/i.test(f.sql.replace(/--.*$/gm, ""))) {
-        assert.equal(f.transactional, false, `${f.file} uses CONCURRENTLY inside a transaction`);
-        assert.equal(f.sql.replace(/--.*$/gm, "").split(";").filter((s) => s.trim()).length, 1, `${f.file} must be one statement`);
-      }
-    }
   });
 });
 
@@ -44,5 +40,25 @@ describe("migration runner against a database", { skip: SKIP_DB }, () => {
     const r = await applyMigrations(db.sql, { dryRun: true });
     assert.deepEqual(r.modified, ["004"]);
     assert.deepEqual(r.pending, []);
+  });
+
+  test("CONCURRENTLY fails inside a transaction and succeeds in a no-transaction file", async () => {
+    const stmt = "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_migration_runner_probe ON videos (title);\n";
+    const dir = (name: string, body: string) => {
+      const d = mkdtempSync(path.join(tmpdir(), "hosk-mig-"));
+      writeFileSync(path.join(d, name), body);
+      return d;
+    };
+    const txDir = dir("901-probe-tx.sql", stmt);
+    const noTxDir = dir("902-probe-no-tx.sql", `-- hosk:no-transaction\n${stmt}`);
+    try {
+      await assert.rejects(applyMigrations(db.sql, { dir: txDir }), /cannot run inside a transaction block/);
+      assert.equal((await db.sql`SELECT 1 FROM schema_migrations WHERE version = '901'`).length, 0, "a failed file is not recorded");
+      assert.deepEqual((await applyMigrations(db.sql, { dir: noTxDir })).applied, ["902"]);
+      assert.equal((await db.sql`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_migration_runner_probe'`).length, 1);
+    } finally {
+      rmSync(txDir, { recursive: true, force: true });
+      rmSync(noTxDir, { recursive: true, force: true });
+    }
   });
 });

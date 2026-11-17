@@ -36,6 +36,9 @@ npx tsx src/cli/hosk.ts migrate apply             # apply in order
 | 005 | `transcripts.search_tsv` column + maintenance trigger | brief (catalogue-only `ADD COLUMN`) |
 | 006 | Backfill `search_tsv` | row locks only; writers to `transcripts` wait ~10 s, readers never |
 | 007 | GIN index on `search_tsv` (`CONCURRENTLY`) | none |
+| 008 | `client_usage_daily` (per-client daily allowance) | new table |
+
+**Apply migrations before the new image goes live.** Run `migrate apply` (with the new image, e.g. `docker compose -f docker-compose.prod.yml run --rm web npx tsx src/cli/hosk.ts migrate apply`) and confirm `migrate` shows nothing pending before switching traffic to it. This release's code needs 003, 004, 005 and 008: without them Ask, `/api/search` and the MCP search tools return 500 (missing function or tables), and Library keyword search with `q` returns 500 (missing `search_tsv`). Every migration is additive, so the previous image keeps working against the migrated schema. Later schema changes follow the same order: migrate first, then activate the image that needs them.
 
 A fresh volume runs `docker/init-db.sql` on first boot. Run `migrate apply` afterwards.
 
@@ -65,15 +68,28 @@ The backfill is resumable. Each video's chunks are written in one transaction, s
 
 ## Paid-call bounds
 
-Every call paid with the site's `OPENAI_API_KEY` passes two guards: a per-process concurrency gate, then a reservation against a daily cap in Postgres. The reservation is a conditional upsert, so it is safe under concurrency and across processes.
+Every call paid with the site's `OPENAI_API_KEY` passes a per-process concurrency gate, then one Postgres transaction that reserves against the calling client's daily allowance and then the site-wide daily cap. Both reservations are conditional upserts in the same transaction, so neither bound can be exceeded under concurrency or across processes, and a request refused by either bound charges nothing to the other.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `SITE_DAILY_ANSWER_CAP` | 200 | site-model answers per UTC day (`0` disables) |
 | `SITE_DAILY_EMBEDDING_CAP` | 2000 | query embeddings per UTC day (`0` disables) |
+| `CLIENT_DAILY_ANSWER_CAP` | 20 | site-model answers per client per UTC day (`0` disables) |
+| `CLIENT_DAILY_EMBEDDING_CAP` | 200 | query embeddings per client per UTC day (`0` disables) |
+| `CLIENT_QUOTA_SECRET` | random per process | HMAC key for stored client identifiers; set it so allowances survive restarts |
 | `SITE_MAX_CONCURRENT_CALLS` | 4 | in-flight site calls per process; queued callers wait up to 15 s, then `503 busy` |
 
 When a cap is reached, Ask, search and MCP return `503 site_budget_exhausted` with `Retry-After` set to the next UTC midnight and `budget` naming the cap (`answer` or `embedding`). The embedding cap also blocks Ask, because every answer needs a query embedding; Library keyword search needs neither. Once the answer cap is spent, Ask refuses before paying for retrieval. Absent or invalid configuration falls back to the defaults. There is no "unlimited" value.
+
+When one client's allowance is spent, that client gets `429 client_quota_exhausted` (same `budget` and `Retry-After` fields) and no paid call is made; other clients are unaffected. The client defaults are development values chosen well below the site caps. Production values are an activation decision for the operator.
+
+A client is the rate limiter's identity: an allow-listed API key, otherwise the `CF-Connecting-IP` address when `TRUST_CLOUDFLARE_IP=true`. Limits of this identity:
+
+- **Shared IPs:** everyone behind one address (an office, a carrier NAT, a VPN exit) shares one allowance.
+- **No trusted IP:** without `TRUST_CLOUDFLARE_IP=true`, every anonymous visitor is the single client `anon`, so the anonymous per-client allowance becomes the whole anonymous allowance. Raise the client caps or enable the trusted header before relying on this.
+- **Distributed clients:** someone using many addresses gets one allowance per address. The site cap still bounds the total.
+
+`client_usage_daily` stores `(day, client, kind, calls)`. `client` is an HMAC-SHA256 of the UTC day and the identity under `CLIENT_QUOTA_SECRET`; the raw IP or API key is never written, and the value changes every day. Rows from earlier days are deleted by the application on the first reservation of each new UTC day, so the live table holds at most the current day (plus the previous day until the next paid call); database backups taken meanwhile still contain those rows.
 
 Per-call bounds:
 
@@ -91,7 +107,7 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 
 **These are call counts, not money.** The OpenAI project budget alert and hard limit remain the only spend ceiling. Set them in the provider dashboard.
 
-`npx tsx src/cli/hosk.ts usage` shows today's counts.
+`npx tsx src/cli/hosk.ts usage` shows today's site-wide counts.
 
 ## Security and privacy
 

@@ -70,6 +70,20 @@ export interface RateResult {
 }
 
 /**
+ * The identity a request is limited and charged as: `key:<key>` for an
+ * allow-listed bearer key, otherwise `ip:<ip>` (or the shared `ip:anon`).
+ * Callers must have passed checkRate, which refuses unknown bearer keys.
+ */
+export function clientIdentity(req: NextRequest): string {
+  const auth = req.headers.get("authorization");
+  if (auth && /^bearer(?:\s|$)/i.test(auth)) {
+    const key = auth.slice(6).trim();
+    if (key && validKeys().has(key)) return `key:${key}`;
+  }
+  return `ip:${clientIp(req)}`;
+}
+
+/**
  * Check a request against its tier. Returns ok, or the error to send.
  * `cost` charges several units at once (an MCP batch is charged one unit per
  * message); a request costing more than the tier's burst is always refused.
@@ -77,18 +91,18 @@ export interface RateResult {
 export function checkRate(req: NextRequest, cost = 1): RateResult {
   const now = Date.now();
   const auth = req.headers.get("authorization");
-  const keys = validKeys();
 
   if (auth && /^bearer(?:\s|$)/i.test(auth)) {
     const key = auth.slice(6).trim();
-    if (!key || !keys.has(key)) {
+    if (!key || !validKeys().has(key)) {
       return { ok: false, status: 401, body: { error: "invalid_key" } };
     }
-    const r = take(`key:${key}`, KEYED_PER_MIN, KEYED_PER_MIN, now, cost);
-    return r.ok ? { ok: true } : { ok: false, status: 429, retryAfter: r.retryAfter, body: { error: "rate_limited" } };
   }
 
-  const r = take(`ip:${clientIp(req)}`, ANON_PER_MIN, ANON_PER_MIN * 2, now, cost);
+  const id = clientIdentity(req);
+  const perMin = id.startsWith("key:") ? KEYED_PER_MIN : ANON_PER_MIN;
+  const burst = id.startsWith("key:") ? KEYED_PER_MIN : ANON_PER_MIN * 2;
+  const r = take(id, perMin, burst, now, cost);
   return r.ok ? { ok: true } : { ok: false, status: 429, retryAfter: r.retryAfter, body: { error: "rate_limited" } };
 }
 

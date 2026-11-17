@@ -3,8 +3,9 @@
  * Shared by /api/ask, /api/search and the MCP tools.
  *
  * Every site-funded call (query embedding, answer completion) goes through
- * usage.withSiteCall, which applies the process concurrency gate and the daily
- * cap for that call kind.
+ * usage.withSiteCall, which applies the process concurrency gate, the calling
+ * client's daily allowance and the site's daily cap for that call kind.
+ * `client` is the limiter identity from ratelimit.clientIdentity.
  */
 import { createHash } from "node:crypto";
 import { sql, matchChunksScoped, type ScopedChunk } from "./db";
@@ -46,7 +47,7 @@ function normaliseQuery(q: string): string {
   return q.replace(/\s+/g, " ").trim();
 }
 
-export async function embedQuery(query: string): Promise<number[]> {
+export async function embedQuery(query: string, client: string): Promise<number[]> {
   const text = normaliseQuery(query);
   if (!text) return [];
   const key = createHash("sha256").update(text).digest("hex");
@@ -56,7 +57,7 @@ export async function embedQuery(query: string): Promise<number[]> {
     embedCache.set(key, hit);
     return hit.v;
   }
-  const v = await withSiteCall("embedding", async () => {
+  const v = await withSiteCall("embedding", client, async () => {
     const res = await getClient().embeddings.create(
       { model: "text-embedding-3-small", input: text, dimensions: 1536 },
       { timeout: SITE_CALL_TIMEOUT_MS, maxRetries: 0 }
@@ -93,8 +94,8 @@ function toContextItem(c: ScopedChunk, n: number): AskContextItem {
 }
 
 /** Ranked in-scope chunks for a query (exact search, scope applied before LIMIT). */
-export async function retrieveChunks(query: string, scope: Scope, count = RETRIEVE_COUNT): Promise<ScopedChunk[]> {
-  const embedding = await embedQuery(query);
+export async function retrieveChunks(query: string, scope: Scope, client: string, count = RETRIEVE_COUNT): Promise<ScopedChunk[]> {
+  const embedding = await embedQuery(query, client);
   if (!embedding.length) return [];
   return await matchChunksScoped(embedding, RETRIEVE_THRESHOLD, count, scope);
 }
@@ -103,8 +104,8 @@ export async function retrieveChunks(query: string, scope: Scope, count = RETRIE
  * Grounding context for a question: the top CONTEXT_SEGMENTS in-scope chunks,
  * or null when nothing clears the quality threshold.
  */
-export async function retrieveContext(query: string, scope: Scope): Promise<AskContextItem[] | null> {
-  const chunks = await retrieveChunks(query, scope);
+export async function retrieveContext(query: string, scope: Scope, client: string): Promise<AskContextItem[] | null> {
+  const chunks = await retrieveChunks(query, scope, client);
   const best = chunks[0]?.similarity ?? 0;
   if (!chunks.length || best < QUALITY_THRESHOLD) return null;
   return chunks.slice(0, CONTEXT_SEGMENTS).map((c, i) => toContextItem(c, i + 1));
@@ -114,8 +115,8 @@ export async function retrieveContext(query: string, scope: Scope): Promise<AskC
 // Synthesis (site model; budgeted per call)
 // ---------------------------------------------------------------------------
 
-function completeWithSiteModel(messages: ChatMessage[]): Promise<string> {
-  return withSiteCall("answer", async () => {
+function completeWithSiteModel(messages: ChatMessage[], client: string): Promise<string> {
+  return withSiteCall("answer", client, async () => {
     const completion = await getClient().chat.completions.create(
       {
         model: SITE_MODEL,
@@ -143,7 +144,7 @@ export async function askArchive(
   query: string,
   scope: Scope,
   filters: AskFilters | undefined,
-  opts: { withCitations?: boolean; persist?: boolean; requestId?: string } = {}
+  opts: { client: string; withCitations?: boolean; persist?: boolean; requestId?: string }
 ): Promise<(AskResponse & { cached?: boolean }) | AskEmpty> {
   const withCitations = opts.withCitations ?? true;
 
@@ -152,11 +153,11 @@ export async function askArchive(
   if (cached) return { ...cached, cached: true };
 
   // Don't pay for retrieval when today's answers are already used up.
-  await assertSiteBudgetLeft("answer");
-  const context = await retrieveContext(query, scope);
+  await assertSiteBudgetLeft("answer", opts.client);
+  const context = await retrieveContext(query, scope, opts.client);
   if (!context) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
 
-  const raw = await completeWithSiteModel(buildMessages(query, context));
+  const raw = await completeWithSiteModel(buildMessages(query, context), opts.client);
   const result = assembleAnswer(query, context, parseModelOutput(raw), { withCitations });
   if (!result) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
 

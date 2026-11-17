@@ -1,7 +1,7 @@
 /**
  * Work bounds and input validation shared by every entry point that can spend
- * model calls: POST /api/ask, POST /api/ask/context, GET /api/search and the MCP
- * tools. Client-safe (no server imports) so the UI can mirror the limits.
+ * model calls: POST /api/ask, GET /api/search and the MCP tools. Client-safe
+ * (no server imports) so the UI can mirror the limits.
  */
 import type { AskFilters } from "./ask-types";
 

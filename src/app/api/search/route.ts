@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { searchSegments } from "@/lib/api";
-import { rateLimited } from "@/lib/ratelimit";
+import { clientIdentity, rateLimited } from "@/lib/ratelimit";
 import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, clampInt, isYoutubeId, validateFilters, validateQuery } from "@/lib/limits";
 import { errorResponse, jsonError } from "@/lib/errors";
 
@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const items = await searchSegments(q.value, {
+      client: clientIdentity(request),
       limit: clampInt(sp.get("limit"), DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
       videoId,
       from: f.value.scope.from,

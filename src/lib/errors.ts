@@ -28,10 +28,30 @@ const BUDGET_MESSAGES: Record<SiteCallKind, string> = {
     "Today's site-funded search allowance is used up, so neither answers nor semantic segment search can run until 00:00 UTC. Library keyword search still works.",
 };
 
+/** Per-client allowance messages (same retrieval caveat as the site budget). */
+const CLIENT_QUOTA_MESSAGES: Record<SiteCallKind, string> = {
+  answer:
+    "Your daily answer allowance is used up. Semantic segment search and Library keyword search still work. Answers resume at 00:00 UTC.",
+  embedding:
+    "Your daily search allowance is used up, so neither answers nor semantic segment search can run for you until 00:00 UTC. Library keyword search still works.",
+};
+
 /** Classify pipeline failures into a status + safe body. Unknown errors become 500. */
 export function describeError(e: unknown): { status: number; body: ErrorBody; headers: Record<string, string> } {
   if (e instanceof BudgetExceededError) {
     const retry = secondsUntilUtcMidnight();
+    if (e.scope === "client") {
+      return {
+        status: 429,
+        body: {
+          error: "client_quota_exhausted",
+          budget: e.kind,
+          message: CLIENT_QUOTA_MESSAGES[e.kind],
+          retry_after: retry,
+        },
+        headers: { "Retry-After": String(retry) },
+      };
+    }
     return {
       status: 503,
       body: {

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { askArchive } from "@/lib/retrieval";
-import { rateLimited } from "@/lib/ratelimit";
+import { clientIdentity, rateLimited } from "@/lib/ratelimit";
 import { readJsonBody } from "@/lib/body";
 import { MAX_ASK_BODY_BYTES, validateFilters, validateQuery } from "@/lib/limits";
 import { errorResponse, jsonError } from "@/lib/errors";
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  *       (unknown body and filter keys are ignored, as before)
  * 200: { query, answer, lede, citations[], sources[] }
  * 422: { matched: 0, suggestions: [] }   (nothing cleared the relevance threshold)
- * 400/413/415: invalid input · 401/429: limiter
+ * 400/413/415: invalid input · 401/429: limiter or per-client daily allowance (client_quota_exhausted)
  * 503: site budget exhausted (budget: answer|embedding) or busy · 500: { error, request_id }
  */
 export async function POST(request: NextRequest) {
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const result = await askArchive(q.value, f.value.scope, f.value.filters, {
+      client: clientIdentity(request),
       withCitations: (b.with_citations as boolean | undefined) ?? true,
       persist: true,
       requestId,

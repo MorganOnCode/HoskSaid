@@ -80,6 +80,11 @@ services:
       # hard limits are still required: these are call counts, not dollars.
       SITE_DAILY_ANSWER_CAP: ${SITE_DAILY_ANSWER_CAP:-200}
       SITE_DAILY_EMBEDDING_CAP: ${SITE_DAILY_EMBEDDING_CAP:-2000}
+      # Per-client daily allowances (key, else CF-Connecting-IP) and the HMAC
+      # key for their stored identifiers. Production values are set at activation.
+      CLIENT_DAILY_ANSWER_CAP: ${CLIENT_DAILY_ANSWER_CAP:-20}
+      CLIENT_DAILY_EMBEDDING_CAP: ${CLIENT_DAILY_EMBEDDING_CAP:-200}
+      CLIENT_QUOTA_SECRET: ${CLIENT_QUOTA_SECRET:-}
       SITE_MAX_CONCURRENT_CALLS: ${SITE_MAX_CONCURRENT_CALLS:-4}
       # Store site-model questions/answers in `answers` (see /privacy).
       PERSIST_ASK_QUESTIONS: ${PERSIST_ASK_QUESTIONS:-true}

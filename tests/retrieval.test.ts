@@ -166,7 +166,7 @@ describe("scoped exact retrieval", { skip: SKIP_DB }, () => {
     assert.ok(f.ok);
     const q1 = validateQuery("What did Charles say in this video?");
     assert.ok(q1.ok);
-    const res = await askArchive(q1.value, f.value.scope, f.value.filters, { persist: false });
+    const res = await askArchive(q1.value, f.value.scope, f.value.filters, { client: "ip:test-retrieval", persist: false });
     assert.ok(!("matched" in res), "scoped ask must not fall through to the empty state");
     assert.ok(res.sources.length > 0);
     assert.ok(res.sources.every((s) => s.video_id === "TARGETvid01"));
@@ -182,7 +182,7 @@ describe("scoped exact retrieval", { skip: SKIP_DB }, () => {
     const { validateFilters } = await import("../src/lib/limits");
     const f = validateFilters({ date_from: "2026-01-01" });
     assert.ok(f.ok);
-    const res = await askArchive("Recent question", f.value.scope, f.value.filters, { persist: false });
+    const res = await askArchive("Recent question", f.value.scope, f.value.filters, { client: "ip:test-retrieval", persist: false });
     assert.ok(!("matched" in res));
     assert.ok(res.sources.every((s) => s.video_id === "TARGETvid01"));
   });

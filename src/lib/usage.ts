@@ -1,18 +1,24 @@
 /**
  * Site-funded model-call accounting (server-only).
  *
- * Two independent guards sit in front of every embedding or completion paid
- * for with the site's OPENAI_API_KEY:
+ * Three guards sit in front of every embedding or completion paid for with the
+ * site's OPENAI_API_KEY:
  *   1. A process-wide concurrency gate (bounded queue + wait timeout).
- *   2. A daily call cap stored in Postgres (site_usage_daily), reserved with a
- *      conditional upsert so concurrent requests and multiple processes can never
- *      exceed it.
+ *   2. A per-client daily allowance (client_usage_daily), keyed by an HMAC of
+ *      the UTC day and the limiter identity, so one visitor cannot spend the
+ *      shared budget. The raw IP or API key is never stored.
+ *   3. A site-wide daily call cap (site_usage_daily).
+ * The client and site reservations run in one transaction with conditional
+ * upserts, so concurrent requests and multiple processes can never exceed
+ * either bound, and a request refused by its client allowance never touches
+ * the site budget.
  *
  * These are application call bounds. They are not a billing guarantee: the
  * provider-side project budget/alerts remain the only hard spend ceiling.
  * When the cap env vars are absent the conservative defaults below apply;
  * there is deliberately no "unlimited" setting.
  */
+import { createHmac, randomBytes } from "node:crypto";
 import { sql } from "./db";
 
 export type SiteCallKind = "answer" | "embedding";
@@ -22,28 +28,51 @@ export const DEFAULT_DAILY_CAPS: Record<SiteCallKind, number> = {
   embedding: 2000,
 };
 
+export const DEFAULT_CLIENT_DAILY_CAPS: Record<SiteCallKind, number> = {
+  answer: 20,
+  embedding: 200,
+};
+
 const CAP_ENV: Record<SiteCallKind, string> = {
   answer: "SITE_DAILY_ANSWER_CAP",
   embedding: "SITE_DAILY_EMBEDDING_CAP",
 };
 
-/** Daily cap for a kind. 0 disables site-funded calls of that kind. */
-export function dailyCap(kind: SiteCallKind): number {
-  const raw = process.env[CAP_ENV[kind]];
-  if (raw === undefined || raw.trim() === "") return DEFAULT_DAILY_CAPS[kind];
+const CLIENT_CAP_ENV: Record<SiteCallKind, string> = {
+  answer: "CLIENT_DAILY_ANSWER_CAP",
+  embedding: "CLIENT_DAILY_EMBEDDING_CAP",
+};
+
+function capFromEnv(name: string, def: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return def;
   if (!/^\d+$/.test(raw.trim())) {
-    console.warn(`[usage] ${CAP_ENV[kind]} is not a non-negative integer; using default ${DEFAULT_DAILY_CAPS[kind]}`);
-    return DEFAULT_DAILY_CAPS[kind];
+    console.warn(`[usage] ${name} is not a non-negative integer; using default ${def}`);
+    return def;
   }
   return parseInt(raw, 10);
 }
 
+/** Site-wide daily cap for a kind. 0 disables site-funded calls of that kind. */
+export function dailyCap(kind: SiteCallKind): number {
+  return capFromEnv(CAP_ENV[kind], DEFAULT_DAILY_CAPS[kind]);
+}
+
+/** Per-client daily allowance for a kind. 0 disables site-funded calls of that kind. */
+export function clientDailyCap(kind: SiteCallKind): number {
+  return capFromEnv(CLIENT_CAP_ENV[kind], DEFAULT_CLIENT_DAILY_CAPS[kind]);
+}
+
+export type BudgetScope = "site" | "client";
+
 export class BudgetExceededError extends Error {
   readonly kind: SiteCallKind;
-  constructor(kind: SiteCallKind) {
-    super(`daily site-funded ${kind} cap reached`);
+  readonly scope: BudgetScope;
+  constructor(kind: SiteCallKind, scope: BudgetScope = "site") {
+    super(`daily ${scope === "client" ? "per-client" : "site-funded"} ${kind} cap reached`);
     this.name = "BudgetExceededError";
     this.kind = kind;
+    this.scope = scope;
   }
 }
 
@@ -64,38 +93,94 @@ function utcDay(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
-/**
- * Reserve `n` site-funded calls of `kind` for today. Throws BudgetExceededError
- * when the reservation would exceed the cap. Reservations are not refunded when
- * the provider call later fails (conservative).
- */
-export async function reserveSiteCalls(kind: SiteCallKind, n = 1, now = new Date()): Promise<number> {
-  const cap = dailyCap(kind);
-  if (n > cap) throw new BudgetExceededError(kind);
-  const rows = await sql<{ calls: number }[]>`
-    INSERT INTO site_usage_daily (day, kind, calls)
-    VALUES (${utcDay(now)}, ${kind}, ${n})
-    ON CONFLICT (day, kind) DO UPDATE
-      SET calls = site_usage_daily.calls + EXCLUDED.calls, updated_at = now()
-      WHERE site_usage_daily.calls + EXCLUDED.calls <= ${cap}
-    RETURNING calls
-  `;
-  if (!rows.length) throw new BudgetExceededError(kind);
-  return rows[0].calls;
+declare global {
+  var __hosksaidQuotaSecret: string | undefined;
+}
+
+function quotaSecret(): string {
+  const configured = process.env.CLIENT_QUOTA_SECRET?.trim();
+  if (configured) return configured;
+  if (!globalThis.__hosksaidQuotaSecret) {
+    console.warn("[usage] CLIENT_QUOTA_SECRET is not set; per-client allowances reset when this process restarts");
+    globalThis.__hosksaidQuotaSecret = randomBytes(32).toString("hex");
+  }
+  return globalThis.__hosksaidQuotaSecret;
 }
 
 /**
- * Cheap read-only pre-check: throw BudgetExceededError when today's cap for
- * `kind` is already spent, so a request that cannot finish never starts paying
- * for earlier steps. Not a reservation; reserveSiteCalls stays authoritative.
+ * Stored identifier for a limiter identity on a UTC day: an HMAC, so the row
+ * holds neither the IP nor the API key and is not linkable across days.
  */
-export async function assertSiteBudgetLeft(kind: SiteCallKind, now = new Date()): Promise<void> {
+export function clientQuotaKey(client: string, day: string): string {
+  return createHmac("sha256", quotaSecret()).update(`${day}\n${client}`).digest("base64url");
+}
+
+let purgedBefore: string | null = null;
+
+/** Keep only the current UTC day's per-client rows (once per process per day). */
+async function purgeOldClientUsage(day: string): Promise<void> {
+  if (purgedBefore === day) return;
+  await sql`DELETE FROM client_usage_daily WHERE day < ${day}`;
+  purgedBefore = day;
+}
+
+/**
+ * Reserve `n` site-funded calls of `kind` for `client` today, against both the
+ * client's allowance and the site cap, atomically. Throws BudgetExceededError
+ * (scope "client" or "site") when either would be exceeded; nothing is
+ * reserved in that case. Reservations are not refunded when the provider call
+ * later fails (conservative).
+ */
+export async function reserveSiteCalls(kind: SiteCallKind, client: string, n = 1, now = new Date()): Promise<number> {
   const cap = dailyCap(kind);
-  if (cap === 0) throw new BudgetExceededError(kind);
-  const rows = await sql<{ calls: number }[]>`
-    SELECT calls FROM site_usage_daily WHERE day = ${utcDay(now)} AND kind = ${kind}
+  const clientCap = clientDailyCap(kind);
+  if (n > cap) throw new BudgetExceededError(kind, "site");
+  if (n > clientCap) throw new BudgetExceededError(kind, "client");
+  const day = utcDay(now);
+  await purgeOldClientUsage(day);
+  const key = clientQuotaKey(client, day);
+  return sql.begin(async (tx) => {
+    const mine = await tx<{ calls: number }[]>`
+      INSERT INTO client_usage_daily (day, client, kind, calls)
+      VALUES (${day}, ${key}, ${kind}, ${n})
+      ON CONFLICT (day, client, kind) DO UPDATE
+        SET calls = client_usage_daily.calls + EXCLUDED.calls
+        WHERE client_usage_daily.calls + EXCLUDED.calls <= ${clientCap}
+      RETURNING calls
+    `;
+    if (!mine.length) throw new BudgetExceededError(kind, "client");
+    const site = await tx<{ calls: number }[]>`
+      INSERT INTO site_usage_daily (day, kind, calls)
+      VALUES (${day}, ${kind}, ${n})
+      ON CONFLICT (day, kind) DO UPDATE
+        SET calls = site_usage_daily.calls + EXCLUDED.calls, updated_at = now()
+        WHERE site_usage_daily.calls + EXCLUDED.calls <= ${cap}
+      RETURNING calls
+    `;
+    if (!site.length) throw new BudgetExceededError(kind, "site");
+    return site[0].calls;
+  });
+}
+
+/**
+ * Cheap read-only pre-check: throw BudgetExceededError when today's site cap
+ * or `client`'s allowance for `kind` is already spent, so a request that
+ * cannot finish never starts paying for earlier steps. Not a reservation;
+ * reserveSiteCalls stays authoritative.
+ */
+export async function assertSiteBudgetLeft(kind: SiteCallKind, client: string, now = new Date()): Promise<void> {
+  const cap = dailyCap(kind);
+  const clientCap = clientDailyCap(kind);
+  if (cap === 0) throw new BudgetExceededError(kind, "site");
+  if (clientCap === 0) throw new BudgetExceededError(kind, "client");
+  const day = utcDay(now);
+  const [row] = await sql<{ site: number | null; mine: number | null }[]>`
+    SELECT
+      (SELECT calls FROM site_usage_daily WHERE day = ${day} AND kind = ${kind}) AS site,
+      (SELECT calls FROM client_usage_daily WHERE day = ${day} AND client = ${clientQuotaKey(client, day)} AND kind = ${kind}) AS mine
   `;
-  if (rows.length && rows[0].calls >= cap) throw new BudgetExceededError(kind);
+  if ((row?.site ?? 0) >= cap) throw new BudgetExceededError(kind, "site");
+  if ((row?.mine ?? 0) >= clientCap) throw new BudgetExceededError(kind, "client");
 }
 
 export async function usageToday(now = new Date()): Promise<Record<SiteCallKind, { used: number; cap: number }>> {
@@ -183,11 +268,11 @@ export function gates(): { site: Semaphore } {
   return globalThis.__hosksaidGates;
 }
 
-/** Run one site-funded call: wait for a slot, reserve today's budget, then call. */
-export async function withSiteCall<T>(kind: SiteCallKind, fn: () => Promise<T>): Promise<T> {
+/** Run one site-funded call: wait for a slot, reserve today's client and site budget, then call. */
+export async function withSiteCall<T>(kind: SiteCallKind, client: string, fn: () => Promise<T>): Promise<T> {
   const release = await gates().site.acquire();
   try {
-    await reserveSiteCalls(kind, 1);
+    await reserveSiteCalls(kind, client, 1);
     return await fn();
   } finally {
     release();

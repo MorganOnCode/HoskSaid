@@ -49,12 +49,13 @@ function deepLink(youtubeId: string, start: number | null): string {
  */
 export async function searchSegments(
   query: string,
-  opts: { limit?: number; videoId?: string; from?: Date | null; to?: Date | null } = {}
+  opts: { client: string; limit?: number; videoId?: string; from?: Date | null; to?: Date | null }
 ): Promise<ApiSegment[]> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT);
   const chunks = await retrieveChunks(
     query,
     { youtubeIds: opts.videoId ? [opts.videoId] : null, topicSlugs: null, from: opts.from ?? null, to: opts.to ?? null },
+    opts.client,
     limit
   );
   return chunks.map((c) => ({

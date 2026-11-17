@@ -6,7 +6,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * Plain statement of what this deployment stores. Keep it in step with the
- * code: answers persistence (retrieval.ts), rate limiting (ratelimit.ts) and
+ * code: answers persistence (retrieval.ts), rate limiting (ratelimit.ts),
+ * per-client daily allowances (usage.ts) and
  * browser storage (theme script). It describes storage as it is, not as it
  * might be.
  */
@@ -47,7 +48,9 @@ export default function PrivacyPage() {
         <h2>Network and abuse protection</h2>
         <p>
           Traffic reaches this site through Cloudflare, which processes requests under its own policies. To enforce rate limits, the site keeps
-          your IP address in memory for a few minutes. It is not written to the database. Application logs record errors but not the content of requests.
+          your IP address in memory for a few minutes. To enforce daily allowances for answers and semantic searches, the database keeps a
+          count per client for the current UTC day under a keyed hash of the date and your IP address (or API key). The address or key itself
+          is not stored, the hash changes every day, and earlier days&apos; counts are deleted from the database (nightly backups may still hold them). Application logs record errors but not the content of requests.
           The site sets no cookies of its own and runs no analytics or advertising scripts. Your theme choice is kept in your browser&apos;s
           local storage. Video pages embed YouTube&apos;s player, which loads
           from youtube.com under Google&apos;s policies.
