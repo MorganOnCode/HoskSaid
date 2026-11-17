@@ -475,16 +475,16 @@ export async function getRankingLists(snapshotId: number, from: number, to: numb
   try {
     return await cachedPublic(`an:rank:${snapshotId}:${from}:${to}`, SNAPSHOT_TTL(), () =>
       withAnalyticsTx(async (tx) => {
-        const [exists] = await tx`SELECT 1 FROM analytics_snapshots WHERE id = ${snapshotId}`;
-        if (!exists) throw new SnapshotGoneError();
-        const rows = await tx<(RankingItem & { list: RankingList })[]>`
-          SELECT list, rank, item, videos, of_videos, cmp_videos, cmp_of, lift, edge_share
-          FROM analytics_rankings
-          WHERE snapshot_id = ${snapshotId} AND year_from = ${from} AND year_to = ${to}
-          ORDER BY list, rank
+        const rows = await tx<(RankingItem & { list: RankingList | null })[]>`
+          SELECT r.list, r.rank, r.item, r.videos, r.of_videos, r.cmp_videos, r.cmp_of, r.lift, r.edge_share
+          FROM analytics_snapshots s
+          LEFT JOIN analytics_rankings r ON r.snapshot_id = s.id AND r.year_from = ${from} AND r.year_to = ${to}
+          WHERE s.id = ${snapshotId}
+          ORDER BY r.list, r.rank
         `;
+        if (!rows.length) throw new SnapshotGoneError();
         const out: RankingLists = { phrases: [], keywords: [], distinctive: [], formulas: [] };
-        for (const { list, ...r } of rows) out[list].push(r);
+        for (const { list, ...r } of rows) if (list) out[list].push(r);
         return out;
       })
     );
