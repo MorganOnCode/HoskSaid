@@ -3,14 +3,15 @@ import { UsageError } from "./args";
 import { binPath, closeDb, emit, loadEnv, reportError, RUN, type Command } from "./runtime";
 import { migrateCommand } from "./commands/migrate";
 import { coverageCommand, usageCommand, homeSummary } from "./commands/status";
+import { analyticsCommand } from "./commands/analytics";
 
-const COMMANDS: Command[] = [migrateCommand, coverageCommand, usageCommand];
+const COMMANDS: Command[] = [migrateCommand, coverageCommand, usageCommand, analyticsCommand];
 
 export async function main(argv: string[]): Promise<number> {
   loadEnv();
   try {
     if (argv.length === 0) {
-      emit({ bin: binPath(), description: "Operator CLI for thehosksaid: schema migrations, archive coverage and site-funded usage caps", version: VERSION });
+      emit({ bin: binPath(), description: "Operator CLI for thehosksaid: schema migrations, archive coverage, site-funded usage caps and /analytics rankings", version: VERSION });
       emit(await homeSummary());
       emit({
         commands: COMMANDS.map((c) => ({ name: c.name, summary: c.summary })),

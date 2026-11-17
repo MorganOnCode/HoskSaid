@@ -18,6 +18,8 @@ const nextConfig: NextConfig = {
       { source: "/videos", destination: "/library", permanent: true },
       { source: "/videos/:id", destination: "/video/:id", permanent: true },
       { source: "/search", destination: "/library", permanent: true },
+      // Topics became Analytics (subjects, phrases, keywords and keyword queries by year).
+      { source: "/topics", destination: "/analytics", permanent: true },
     ];
   },
 };

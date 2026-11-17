@@ -18,6 +18,12 @@ export async function homeSummary(): Promise<Record<string, unknown>> {
       const u = await usageToday();
       out.site_calls_today = `answers ${u.answer.used}/${u.answer.cap}, embeddings ${u.embedding.used}/${u.embedding.cap}`;
     }
+    if (await has("public.analytics_snapshots")) {
+      const [s] = await sql<{ generated_at: Date; videos_computed: number }[]>`
+        SELECT generated_at, videos_computed FROM analytics_snapshots ORDER BY generated_at DESC LIMIT 1
+      `;
+      out.analytics_rankings = s ? `computed ${new Date(s.generated_at).toISOString().slice(0, 10)} over ${s.videos_computed} transcripts` : "not computed";
+    }
     return out;
   } catch (e) {
     return { database: "unreachable", detail: e instanceof Error ? e.message.split("\n")[0].slice(0, 120) : "unknown" };

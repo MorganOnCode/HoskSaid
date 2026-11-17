@@ -27,7 +27,7 @@ If you are an AI agent, prefer the structured retrieval interfaces below over sc
 ## Core content
 
 - [Library](${BASE}/library): the full catalogue, with keyword search over titles, tags and full transcripts.
-- [Topics](${BASE}/topics): curated themes (Governance, Midnight, Hydra, Regulation, …); only themes with assigned videos are listed.
+- [Analytics](${BASE}/analytics): subjects (each a public keyword query), repeated phrases, distinctive keywords and intro/sign-off patterns by year, plus up to three keyword queries compared year by year with linked source videos. Counts are videos whose transcript or title matches (tags excluded). JSON: [/api/analytics](${BASE}/api/analytics?q=hydra), [/api/analytics/sources](${BASE}/api/analytics/sources?q=hydra), [/api/analytics/rankings](${BASE}/api/analytics/rankings); free, no model calls, rate-limited.
 - [Timeline](${BASE}/timeline): the archive in chronological order.
 - [Ask](${BASE}/): the human question-answering interface.
 
@@ -66,7 +66,7 @@ export async function buildSitemapXml(): Promise<string> {
   const rows = await sql<{ youtube_id: string; updated_at: string | null }[]>`
     SELECT youtube_id, updated_at FROM videos WHERE status = 'completed' ORDER BY published_at DESC NULLS LAST
   `;
-  const staticPaths = ["", "/library", "/topics", "/timeline", "/agents", "/privacy"];
+  const staticPaths = ["", "/library", "/analytics", "/timeline", "/agents", "/privacy"];
   const urls = [
     ...staticPaths.map((p) => `  <url><loc>${BASE}${p}</loc></url>`),
     ...rows.map(

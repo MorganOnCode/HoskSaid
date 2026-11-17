@@ -1,6 +1,6 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-Operations (migrations, paid-call caps, operator CLI, retrieval, security headers): see [docs/OPERATIONS.md](docs/OPERATIONS.md).
+Operations (migrations, paid-call caps, operator CLI, retrieval, /analytics rankings refresh, security headers): see [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Tests
 

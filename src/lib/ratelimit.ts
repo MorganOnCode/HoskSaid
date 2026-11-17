@@ -47,7 +47,10 @@ function take(key: string, perMin: number, burst: number, now: number, cost = 1)
   return { ok: false, retryAfter: Math.ceil((cost - b.tokens) / b.refillPerSec) };
 }
 
-function clientIp(req: NextRequest): string {
+/** Anything with request headers: a NextRequest, or next/headers' headers() in a page. */
+export type HeaderSource = { headers: { get(name: string): string | null } };
+
+function clientIp(req: HeaderSource): string {
   // Opt in only behind a Cloudflare-only ingress. Never trust caller-supplied
   // X-Forwarded-For. Direct/unidentified clients share a conservative bucket.
   if (process.env.TRUST_CLOUDFLARE_IP === "true") {
@@ -74,7 +77,7 @@ export interface RateResult {
  * allow-listed bearer key, otherwise `ip:<ip>` (or the shared `ip:anon`).
  * Callers must have passed checkRate, which refuses unknown bearer keys.
  */
-export function clientIdentity(req: NextRequest): string {
+export function clientIdentity(req: HeaderSource): string {
   const auth = req.headers.get("authorization");
   if (auth && /^bearer(?:\s|$)/i.test(auth)) {
     const key = auth.slice(6).trim();
@@ -88,7 +91,7 @@ export function clientIdentity(req: NextRequest): string {
  * `cost` charges several units at once (an MCP batch is charged one unit per
  * message); a request costing more than the tier's burst is always refused.
  */
-export function checkRate(req: NextRequest, cost = 1): RateResult {
+export function checkRate(req: HeaderSource, cost = 1): RateResult {
   const now = Date.now();
   const auth = req.headers.get("authorization");
 

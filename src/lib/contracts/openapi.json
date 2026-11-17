@@ -278,6 +278,173 @@
           }
         }
       }
+    },
+    "/analytics": {
+      "get": {
+        "summary": "Per-year video coverage of up to three keyword queries.",
+        "description": "A video matches when its transcript or title matches the query; YouTube tags are not counted. Counts are videos, never raw mentions. Free: no model or embedding calls. Each query costs one rate-limit unit.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Keyword query in the Library grammar (Postgres websearch_to_tsquery('english')): words, \"exact phrases\", OR, -exclusions. Repeat q for up to 3 queries.",
+            "required": true
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "First year (default: earliest)."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "Last year (default: latest)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ range, matching, terms[]: { q, status (ok | empty | negative_only), matched, of, title_only, first, latest, by_year[]: { year, videos, matched, title_only } } }"
+          },
+          "400": {
+            "description": "Invalid or unknown parameter: { error, detail } (e.g. too_many_terms, term_too_long, invalid_year, unknown_parameter)."
+          },
+          "429": {
+            "description": "Rate limited (Retry-After header)."
+          },
+          "503": {
+            "description": "query_timeout: the bounded statement timeout was exceeded."
+          }
+        }
+      }
+    },
+    "/analytics/sources": {
+      "get": {
+        "summary": "Videos matching one keyword query, newest first, with excerpts and links.",
+        "description": "A video matches when its transcript or title matches the query; YouTube tags are not counted. Counts are videos, never raw mentions. Free: no model or embedding calls. timed_start/href use a timestamp only when a timed transcript segment matches; otherwise href opens the transcript filtered to the literal match, or the video.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Keyword query in the Library grammar (Postgres websearch_to_tsquery('english')): words, \"exact phrases\", OR, -exclusions.",
+            "required": true
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "First year."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "Last year."
+          },
+          {
+            "name": "year",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "Only this year (inside from..to)."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 1
+            },
+            "description": "10 videos per page."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ range, matching, q, status, year, total, page, pages, items[]: { youtube_id, title, published_at, duration_seconds, matched_in, excerpt, timed_start, href, link_kind } }"
+          },
+          "400": {
+            "description": "Invalid or unknown parameter: { error, detail } (e.g. too_many_terms, term_too_long, invalid_year, unknown_parameter)."
+          },
+          "429": {
+            "description": "Rate limited (Retry-After header)."
+          },
+          "503": {
+            "description": "query_timeout: the bounded statement timeout was exceeded."
+          }
+        }
+      }
+    },
+    "/analytics/rankings": {
+      "get": {
+        "summary": "Subjects, repeated phrases, keywords and intro/sign-off patterns for a year range.",
+        "description": "Subjects are live counts of public keyword queries. Phrase/keyword lists come from the latest published snapshot (method, generated_at and staleness are reported); a list that is not available says why (not_computed, thin_range, crosses_era, …). A video matches when its transcript or title matches the query; YouTube tags are not counted. Counts are videos, never raw mentions. Free: no model or embedding calls.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "First year."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1990,
+              "maximum": 2100
+            },
+            "description": "Last year."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ method, range, archive_videos, subjects[], snapshot, phrases, keywords, distinctive, formulas } where each list is { ok: true, items[] } or { ok: false, reason, detail }."
+          },
+          "400": {
+            "description": "Invalid or unknown parameter: { error, detail } (e.g. too_many_terms, term_too_long, invalid_year, unknown_parameter)."
+          },
+          "429": {
+            "description": "Rate limited (Retry-After header)."
+          },
+          "503": {
+            "description": "query_timeout: the bounded statement timeout was exceeded."
+          }
+        }
+      }
     }
   },
   "components": {
