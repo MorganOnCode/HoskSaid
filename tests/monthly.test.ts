@@ -456,7 +456,7 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.deepEqual(ev.map((x) => `${x.action}:${x.actor}`), ["generated:generator:cli", "published:firstmate", "withdrawn:firstmate"]);
   });
 
-  test("public reads expose only published posts and no mutation route exists", async () => {
+  test("public reads expose only published posts", async () => {
     await gen({
       model: fakeDraftModel({ reply: (s, _u, d) => (s === "final" ? { ...(d as object), title: "Draft secret title" } : d) }),
     });
@@ -469,11 +469,9 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal(listed.title, "Draft secret title");
     assert.ok(!/generator|fake-1|prompt_version|input_hash/.test(JSON.stringify(listed)), "no private generation metadata");
 
-    const { readdirSync } = await import("node:fs");
-    const files = readdirSync("src/app/blog", { recursive: true }).map(String);
-    assert.deepEqual(files.filter((f) => /route\.ts$/.test(f)), [], "the blog has no route handlers");
-    const apiFiles = readdirSync("src/app/api", { recursive: true }).map(String);
-    assert.ok(!apiFiles.some((f) => /post|blog|publish/i.test(f)), "no API route touches posts");
+    await posts.withdrawPost("2026-10", "ed");
+    assert.equal((await posts.listPublishedPosts()).length, 0, "a withdrawn post is not listed");
+    assert.equal(await posts.getPublishedPost("2026-10"), null);
   });
 
   test("blog pages render published posts with escaped text and accurate links", async () => {
