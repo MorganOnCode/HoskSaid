@@ -3,38 +3,7 @@
  * HTTP responses. Messages are fixed strings: provider error bodies, request
  * headers and keys are never echoed to clients or logs.
  */
-import { BudgetExceededError, BusyError, secondsUntilUtcMidnight } from "./usage";
-
-export type ProviderErrorCode =
-  | "invalid_key"
-  | "rate_limited"
-  | "insufficient_quota"
-  | "model_not_found"
-  | "unavailable"
-  | "timeout"
-  | "bad_response";
-
-/** A visitor-selected provider failed. There is never a fallback to the site key. */
-export class ProviderError extends Error {
-  readonly code: ProviderErrorCode;
-  readonly provider: string;
-  constructor(provider: string, code: ProviderErrorCode) {
-    super(`provider ${provider} failed: ${code}`);
-    this.name = "ProviderError";
-    this.code = code;
-    this.provider = provider;
-  }
-}
-
-const PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
-  invalid_key: "The provider rejected this API key. Check the key or create a new one.",
-  rate_limited: "The provider is rate-limiting this key. Wait a moment and retry.",
-  insufficient_quota: "The provider reports this key has no remaining credit or quota.",
-  model_not_found: "The provider does not offer that model for this key.",
-  unavailable: "The provider did not respond successfully. Retry, or choose another engine.",
-  timeout: "The provider took too long to answer.",
-  bad_response: "The provider returned a response this site could not read.",
-};
+import { BudgetExceededError, BusyError, secondsUntilUtcMidnight, type SiteCallKind } from "./usage";
 
 export interface ErrorBody {
   error: string;
@@ -47,6 +16,18 @@ export function jsonError(status: number, body: ErrorBody, headers: Record<strin
   return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
 }
 
+/**
+ * Cap-specific advice. The embedding budget pays for finding transcript
+ * segments, which every Ask and semantic search needs, so its message must not
+ * suggest any route around it; Library keyword search needs neither budget.
+ */
+const BUDGET_MESSAGES: Record<SiteCallKind, string> = {
+  answer:
+    "Today's site-funded answer allowance is used up. Semantic segment search and Library keyword search still work. Answers resume at 00:00 UTC.",
+  embedding:
+    "Today's site-funded search allowance is used up, so neither answers nor semantic segment search can run until 00:00 UTC. Library keyword search still works.",
+};
+
 /** Classify pipeline failures into a status + safe body. Unknown errors become 500. */
 export function describeError(e: unknown): { status: number; body: ErrorBody; headers: Record<string, string> } {
   if (e instanceof BudgetExceededError) {
@@ -55,7 +36,8 @@ export function describeError(e: unknown): { status: number; body: ErrorBody; he
       status: 503,
       body: {
         error: "site_budget_exhausted",
-        message: `Today's site-funded ${e.kind === "answer" ? "answer" : "search"} allowance is used up. It resets at 00:00 UTC.`,
+        budget: e.kind,
+        message: BUDGET_MESSAGES[e.kind],
         retry_after: retry,
       },
       headers: { "Retry-After": String(retry) },
@@ -63,13 +45,6 @@ export function describeError(e: unknown): { status: number; body: ErrorBody; he
   }
   if (e instanceof BusyError) {
     return { status: 503, body: { error: "busy", message: "The archive is busy. Retry in a few seconds." }, headers: { "Retry-After": "5" } };
-  }
-  if (e instanceof ProviderError) {
-    return {
-      status: 502,
-      body: { error: "provider_error", code: e.code, provider: e.provider, message: PROVIDER_MESSAGES[e.code] },
-      headers: {},
-    };
   }
   return { status: 500, body: { error: "internal" }, headers: {} };
 }

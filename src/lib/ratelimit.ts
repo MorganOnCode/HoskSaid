@@ -102,8 +102,8 @@ export function rateLimited(req: NextRequest, cost = 1): Response | null {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny TTL cache (hot site-funded Ask answers only). Never stores answers made
-// with a visitor's provider key or local model, and never any key material.
+// Tiny TTL cache (hot Ask answers to identical public-archive questions only).
+// Never stores key material, request headers or anything user-identifying.
 // ---------------------------------------------------------------------------
 const cache = new Map<string, { value: unknown; expires: number }>();
 const CACHE_MAX = 500;

@@ -1,20 +1,16 @@
 /**
- * Grounded-synthesis core shared by every answer engine (client-safe: no server
- * imports). The site model, a visitor's own provider key and a browser-local
- * model all receive exactly the same numbered transcript context and prompt,
- * and their output goes through the same citation validation, so every engine
- * keeps the segment -> video -> timestamp citation contract.
+ * Grounded-synthesis core (client-safe: no server imports): the numbered
+ * transcript context, the prompt, and the citation validation that keeps the
+ * segment -> video -> timestamp citation contract.
  */
 import { formatTimecode } from "./format";
 import { bestQuote } from "./transcript-utils";
-import type { AskCitation, AskContextItem, AskGeneratedBy, AskResponse, AskSource } from "./ask-types";
-
-export const PROMPT_VERSION = "2026-11-15.1";
+import type { AskCitation, AskContextItem, AskResponse, AskSource } from "./ask-types";
 
 /** Hard cap on one segment's text in the prompt (bounds input tokens per call). */
 export const MAX_CONTEXT_CHARS_PER_SEGMENT = 1500;
 export const CONTEXT_SEGMENTS = 12;
-/** Output token bound for every engine. */
+/** Output token bound for every answer. */
 export const ANSWER_MAX_TOKENS = 1100;
 
 export const SYSTEM_PROMPT = `You are the answer engine for thehosksaid, an independent index of Charles Hoskinson's public videos (talks, AMAs, whiteboards).
@@ -103,7 +99,7 @@ export function assembleAnswer(
   query: string,
   context: AskContextItem[],
   parsed: { lede: string; answer: string },
-  opts: { withCitations?: boolean; generatedBy?: AskGeneratedBy } = {}
+  opts: { withCitations?: boolean } = {}
 ): AskResponse | null {
   if (!parsed.answer) return null;
   const { text: answer, order } = renumberCitations(parsed.answer, context.length);
@@ -140,6 +136,5 @@ export function assembleAnswer(
     lede: parsed.lede,
     citations: opts.withCitations === false ? [] : citations,
     sources,
-    ...(opts.generatedBy ? { generated_by: opts.generatedBy } : {}),
   };
 }

@@ -56,6 +56,7 @@ export function AskBox({
           }}
           placeholder={placeholder}
           rows={2}
+          maxLength={1000}
           aria-label="Ask the archive"
         />
         <div className="ask-bar">

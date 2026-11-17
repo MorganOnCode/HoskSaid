@@ -10,7 +10,7 @@ export async function main(argv: string[]): Promise<number> {
   loadEnv();
   try {
     if (argv.length === 0) {
-      emit({ bin: binPath(), description: "Operator CLI for thehosksaid: schema migrations, coverage, usage caps, monthly posts and the weekly newsletter", version: VERSION });
+      emit({ bin: binPath(), description: "Operator CLI for thehosksaid: schema migrations, archive coverage and site-funded usage caps", version: VERSION });
       emit(await homeSummary());
       emit({
         commands: COMMANDS.map((c) => ({ name: c.name, summary: c.summary })),

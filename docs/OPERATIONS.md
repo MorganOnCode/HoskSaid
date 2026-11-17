@@ -1,11 +1,11 @@
 # HoskSaid operations
 
-How to run, migrate and operate thehosksaid. Nothing in this document runs on its own: there is no installed cron entry, no automatic migration and no automatic sending. Every step below is an explicit operator action.
+How to run, migrate and operate thehosksaid. Nothing in this document runs on its own: there is no installed cron entry and no automatic migration. Every step below is an explicit operator action.
 
 ## Operator CLI
 
 ```sh
-npx tsx src/cli/hosk.ts                 # live summary: migrations, posts, issues, usage
+npx tsx src/cli/hosk.ts                 # live summary: migrations, today's site-funded usage
 npx tsx src/cli/hosk.ts <command> --help
 ```
 
@@ -73,7 +73,7 @@ Every call paid with the site's `OPENAI_API_KEY` passes two guards: a per-proces
 | `SITE_DAILY_EMBEDDING_CAP` | 2000 | query embeddings per UTC day (`0` disables) |
 | `SITE_MAX_CONCURRENT_CALLS` | 4 | in-flight site calls per process; queued callers wait up to 15 s, then `503 busy` |
 
-When the cap is reached, Ask, search and MCP return `503 site_budget_exhausted` with `Retry-After` set to the next UTC midnight. Absent or invalid configuration falls back to the defaults. There is no "unlimited" value.
+When a cap is reached, Ask, search and MCP return `503 site_budget_exhausted` with `Retry-After` set to the next UTC midnight and `budget` naming the cap (`answer` or `embedding`). The embedding cap also blocks Ask, because every answer needs a query embedding; Library keyword search needs neither. Once the answer cap is spent, Ask refuses before paying for retrieval. Absent or invalid configuration falls back to the defaults. There is no "unlimited" value.
 
 Per-call bounds:
 
@@ -105,4 +105,5 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 
 - Pages render dynamically so the CSP nonce can be applied.
 - Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
-- Answers, keys, subscriber data and operator data are never cached publicly.
+- Questions, answers, keys and operator data are never put in the public memo. The separate 5-minute answer cache is keyed by the normalised question text, filters and citation flag, so it only returns an answer to someone who sent that same question.
+- Within one request, the video page reads the video once (React `cache()`), shared by metadata and the page.

@@ -6,13 +6,12 @@ export const dynamic = "force-dynamic";
 
 /**
  * Plain statement of what this deployment stores. Keep it in step with the
- * code: answers persistence (retrieval.ts), rate limiting (ratelimit.ts),
- * browser storage (EngineProvider, theme script) and subscriptions
- * (newsletter/*). It describes storage as it is, not as it might be.
+ * code: answers persistence (retrieval.ts), rate limiting (ratelimit.ts) and
+ * browser storage (theme script). It describes storage as it is, not as it
+ * might be.
  */
 export default function PrivacyPage() {
   const persist = process.env.PERSIST_ASK_QUESTIONS !== "false";
-  const newsletter = process.env.NEWSLETTER_ENABLED === "true";
   const contact = process.env.CONTACT_EMAIL || "morganic.thailand@gmail.com";
   return (
     <div className="wrap">
@@ -39,21 +38,6 @@ export default function PrivacyPage() {
           The home page&apos;s &ldquo;Most cited&rdquo; list only appears once at least five questions were asked in the past week.
         </p>
 
-        <h2>Questions answered with your own key or local model</h2>
-        <p>
-          If you choose <b>Your API key</b>, your key and question pass through this site&apos;s server for that one request and are sent only to
-          the provider you picked. The key is not stored, logged or cached on the server, and neither the question nor the answer is saved.
-          If you choose <b>Local model</b>, your browser sends the question to this site only to find transcript segments (not saved), then your
-          browser talks to the model server on your own computer directly. In both cases the site still pays for and computes the search
-          embedding with OpenAI.
-        </p>
-        <p>
-          In your browser, a provider key is kept in memory by default and is gone when you close or reload the tab. If you tick
-          &ldquo;remember for this tab&rdquo; it is kept in that tab&apos;s session storage until the tab closes or you press &ldquo;Forget key&rdquo;.
-          Local-model settings (address and model name, never keys) and your theme choice are kept in local storage. To revoke a key, delete it in
-          your provider&apos;s dashboard.
-        </p>
-
         <h2>Searches</h2>
         <p>
           Library keyword searches run in the site&apos;s database and are not stored. Semantic segment searches (<code>/api/search</code>,
@@ -64,20 +48,10 @@ export default function PrivacyPage() {
         <p>
           Traffic reaches this site through Cloudflare, which processes requests under its own policies. To enforce rate limits, the site keeps
           your IP address in memory for a few minutes. It is not written to the database. Application logs record errors but not the content of requests.
-          The site sets no cookies of its own and runs no analytics or advertising scripts. Video pages embed YouTube&apos;s player, which loads
+          The site sets no cookies of its own and runs no analytics or advertising scripts. Your theme choice is kept in your browser&apos;s
+          local storage. Video pages embed YouTube&apos;s player, which loads
           from youtube.com under Google&apos;s policies.
         </p>
-
-        <h2>Newsletter</h2>
-        {newsletter ? (
-          <p>
-            If you subscribe, the site stores your email address, whether you have confirmed, when and under which consent wording you agreed, and
-            hashed one-time tokens for confirming and unsubscribing. It does not store your IP address or browser details. Every email has a one-click
-            unsubscribe link. Unsubscribing stops all mail. Your address is kept only so that it stays unsubscribed.
-          </p>
-        ) : (
-          <p>The newsletter is not open yet. No email addresses are collected.</p>
-        )}
 
         <h2>Requests</h2>
         <p>

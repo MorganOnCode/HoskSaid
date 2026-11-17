@@ -113,26 +113,6 @@
                     },
                     "query": {
                       "type": "string"
-                    },
-                    "generated_by": {
-                      "type": "object",
-                      "description": "Which engine produced the answer.",
-                      "properties": {
-                        "engine": {
-                          "type": "string",
-                          "enum": [
-                            "site",
-                            "user_key",
-                            "local"
-                          ]
-                        },
-                        "provider": {
-                          "type": "string"
-                        },
-                        "model": {
-                          "type": "string"
-                        }
-                      }
                     }
                   }
                 }
@@ -155,7 +135,7 @@
             "description": "Request body larger than 16 KiB."
           },
           "503": {
-            "description": "site_budget_exhausted (the daily cap on site-funded calls is used up; resets 00:00 UTC, Retry-After set) or busy (too many concurrent model calls)."
+            "description": "site_budget_exhausted (a daily cap on site-funded calls is used up; `budget` is `answer` or `embedding`; resets 00:00 UTC, Retry-After set) or busy (too many concurrent model calls)."
           }
         }
       }
@@ -212,7 +192,7 @@
             "description": "Ranked segments."
           },
           "503": {
-            "description": "site_budget_exhausted or busy."
+            "description": "site_budget_exhausted (`budget`: `embedding`) or busy."
           }
         }
       }

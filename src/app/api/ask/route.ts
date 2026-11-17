@@ -4,19 +4,18 @@ import { rateLimited } from "@/lib/ratelimit";
 import { readJsonBody } from "@/lib/body";
 import { MAX_ASK_BODY_BYTES, validateFilters, validateQuery } from "@/lib/limits";
 import { errorResponse, jsonError } from "@/lib/errors";
-import { userSynthesizerFromRequest } from "@/lib/providers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/ask — synthesized, citation-backed answer.
- * Body: { query: string (<=1000 chars), filters?: {...}, with_citations?: boolean,
- *         engine?: { provider, model } }  (+ X-Provider-Key header for a visitor key)
- * 200: { query, answer, lede, citations[], sources[], generated_by }
+ * Body: { query: string (<=1000 chars), filters?: {...}, with_citations?: boolean }
+ *       (unknown body and filter keys are ignored, as before)
+ * 200: { query, answer, lede, citations[], sources[] }
  * 422: { matched: 0, suggestions: [] }   (nothing cleared the relevance threshold)
- * 400/413/415: invalid input · 401/429: limiter · 502: visitor provider failed
- * 503: site budget exhausted or busy · 500: { error, request_id }
+ * 400/413/415: invalid input · 401/429: limiter
+ * 503: site budget exhausted (budget: answer|embedding) or busy · 500: { error, request_id }
  */
 export async function POST(request: NextRequest) {
   const limited = rateLimited(request);
@@ -40,15 +39,11 @@ export async function POST(request: NextRequest) {
     return jsonError(400, { error: "invalid_body", message: "with_citations must be a boolean", request_id: requestId });
   }
 
-  const engine = userSynthesizerFromRequest(request, b.engine);
-  if (!engine.ok) return jsonError(400, { error: engine.error, message: engine.message, request_id: requestId });
-
   try {
     const result = await askArchive(q.value, f.value.scope, f.value.filters, {
       withCitations: (b.with_citations as boolean | undefined) ?? true,
       persist: true,
       requestId,
-      synthesizer: engine.synthesizer ?? undefined,
     });
 
     if ("matched" in result) return Response.json(result, { status: 422, headers: noStore });

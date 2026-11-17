@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 /**
- * hosk — operator CLI for thehosksaid (migrations, coverage, usage, monthly
- * posts, weekly newsletter). Run on a host with DATABASE_URL set:
+ * hosk — operator CLI for thehosksaid (schema migrations, archive coverage,
+ * site-funded usage caps). Run on a host with DATABASE_URL set:
  *   npx tsx src/cli/hosk.ts <command> ...
  * Output is TOON on stdout; progress/diagnostics go to stderr.
  */

@@ -14,16 +14,6 @@ export async function homeSummary(): Promise<Record<string, unknown>> {
     const pending = status.filter((m) => m.state !== "applied").length;
     const out: Record<string, unknown> = { migrations: pending ? `${pending} pending or modified of ${status.length}` : `all ${status.length} applied` };
     const has = async (table: string) => (await sql`SELECT to_regclass(${table}) AS t`)[0].t !== null;
-    if (await has("public.posts")) {
-      const rows = await sql<{ status: string; n: number }[]>`SELECT status, count(*)::int AS n FROM posts GROUP BY status`;
-      out.posts = rows.length ? rows.map((r) => `${r.n} ${r.status}`).join(", ") : "none";
-    }
-    if (await has("public.newsletter_issues")) {
-      const rows = await sql<{ status: string; n: number }[]>`SELECT status, count(*)::int AS n FROM newsletter_issues GROUP BY status`;
-      out.newsletter_issues = rows.length ? rows.map((r) => `${r.n} ${r.status}`).join(", ") : "none";
-      const [s] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM subscribers WHERE status = 'confirmed'`;
-      out.confirmed_subscribers = s.n;
-    }
     if (await has("public.site_usage_daily")) {
       const u = await usageToday();
       out.site_calls_today = `answers ${u.answer.used}/${u.answer.cap}, embeddings ${u.embedding.used}/${u.embedding.cap}`;
@@ -46,10 +36,14 @@ export const coverageCommand: Command = {
   summary: "Read-only archive coverage report and costed embedding-backfill estimate",
   usage: COVERAGE_USAGE,
   async run(argv) {
-    const { flags } = parseArgs(argv, { "price-per-mtok": "string" }, COVERAGE_USAGE);
+    const { positionals, flags } = parseArgs(argv, { "price-per-mtok": "string" }, COVERAGE_USAGE);
     if (flags.help) {
       emit({ usage: COVERAGE_USAGE });
       return 0;
+    }
+    if (positionals.length) {
+      emit({ error: `unexpected argument ${positionals[0]}`, help: COVERAGE_USAGE });
+      return 2;
     }
     const price = flags["price-per-mtok"] === undefined ? 0.02 : Number(flags["price-per-mtok"]);
     if (!Number.isFinite(price) || price < 0) {
@@ -101,10 +95,14 @@ export const usageCommand: Command = {
   summary: "Today's site-funded call counts vs SITE_DAILY_*_CAP",
   usage: USAGE_USAGE,
   async run(argv) {
-    const { flags } = parseArgs(argv, {}, USAGE_USAGE);
+    const { positionals, flags } = parseArgs(argv, {}, USAGE_USAGE);
     if (flags.help) {
       emit({ usage: USAGE_USAGE });
       return 0;
+    }
+    if (positionals.length) {
+      emit({ error: `unexpected argument ${positionals[0]}`, help: USAGE_USAGE });
+      return 2;
     }
     const u = await usageToday();
     emit({ day_utc: new Date().toISOString().slice(0, 10), answers: u.answer, embeddings: u.embedding });

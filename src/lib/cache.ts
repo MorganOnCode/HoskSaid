@@ -1,7 +1,7 @@
 /**
  * In-process TTL memo for PUBLIC, non-personal data only (archive stats, topic
  * counts, catalogue lists). Concurrent callers share one in-flight query, and
- * failures are never cached. Never use this for answers, keys, subscriber or
+ * failures are never cached. Never use this for questions, answers, keys or
  * operator data.
  */
 const MAX_ENTRIES = 300;

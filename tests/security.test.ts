@@ -20,12 +20,12 @@ test("canonical redirect: http -> https and www -> apex only behind the trusted 
   assert.equal(canonicalRedirect({ host: "thehosksaid.com", forwardedProto: "http", pathAndQuery: "/" }, { ...env, enabled: false }), null);
 });
 
-test("CSP: nonce scripts, no inline/eval in production, loopback-only connect for local models", () => {
+test("CSP: nonce scripts, no inline/eval in production, same-origin connect only", () => {
   const csp = buildCsp("abc123");
   assert.match(csp, /script-src 'self' 'nonce-abc123'/);
   assert.doesNotMatch(csp, /unsafe-eval/);
   assert.doesNotMatch(csp.match(/script-src[^;]*/)![0], /unsafe-inline/);
-  assert.match(csp, /connect-src 'self' http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*/);
+  assert.equal(csp.match(/connect-src[^;]*/)![0], "connect-src 'self'", "no localhost/private-network destinations");
   assert.match(csp, /frame-ancestors 'none'/);
   assert.match(csp, /object-src 'none'/);
   assert.match(buildCsp("n", { dev: true }), /unsafe-eval/);

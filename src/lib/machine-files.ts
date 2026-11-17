@@ -66,7 +66,7 @@ export async function buildSitemapXml(): Promise<string> {
   const rows = await sql<{ youtube_id: string; updated_at: string | null }[]>`
     SELECT youtube_id, updated_at FROM videos WHERE status = 'completed' ORDER BY published_at DESC NULLS LAST
   `;
-  const staticPaths = ["", "/library", "/topics", "/timeline", "/blog", "/agents", "/privacy"];
+  const staticPaths = ["", "/library", "/topics", "/timeline", "/agents", "/privacy"];
   const urls = [
     ...staticPaths.map((p) => `  <url><loc>${BASE}${p}</loc></url>`),
     ...rows.map(

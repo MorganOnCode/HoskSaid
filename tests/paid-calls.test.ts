@@ -168,6 +168,49 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
     assert.equal(fake.calls.chat, 0);
   });
 
+  test("budget errors name the exhausted cap; embedding exhaustion offers no route around retrieval", async () => {
+    process.env.SITE_DAILY_ANSWER_CAP = "0";
+    const a = await askRoute.POST(post("/api/ask", { query: "answer cap question" }));
+    assert.equal(a.status, 503);
+    const ab = await a.json();
+    assert.equal(ab.error, "site_budget_exhausted");
+    assert.equal(ab.budget, "answer");
+    assert.match(ab.message, /answer allowance/);
+
+    assert.equal(fake.calls.embeddings, 0, "no retrieval is paid for once answers are exhausted");
+    assert.equal(fake.calls.chat, 0);
+
+    delete process.env.SITE_DAILY_ANSWER_CAP;
+    retrieval.clearEmbeddingCache();
+    fake.calls.embeddings = 0;
+    process.env.SITE_DAILY_EMBEDDING_CAP = "0";
+    const responses = [
+      await askRoute.POST(post("/api/ask", { query: "embedding cap question" })),
+      await searchRoute.GET(new NextRequest("http://localhost/api/search?q=embedding+cap")),
+    ];
+    for (const res of responses) {
+      assert.equal(res.status, 503);
+      const b = await res.json();
+      assert.equal(b.budget, "embedding");
+      assert.doesNotMatch(b.message, /model|engine|api key|your key/i, "must not suggest another model or key bypasses retrieval");
+      assert.match(b.message, /keyword search still works/i);
+    }
+    const mcp = await mcpRoute.POST(post("/mcp", mcpCall(1, "embedding cap via mcp")));
+    const m = await mcp.json();
+    assert.equal(m.result.isError, true);
+    assert.equal(JSON.parse(m.result.content[0].text).budget, "embedding");
+    assert.equal(fake.calls.embeddings, 0);
+    assert.equal(fake.calls.chat, 0);
+  });
+
+  test("legacy or unknown Ask body fields are ignored, not rejected", async () => {
+    const res = await askRoute.POST(post("/api/ask", { query: "compat question", engine: { provider: "x", model: "y" }, extra: 1 }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.citations.length > 0, "cited-answer contract unchanged");
+    assert.equal("generated_by" in body, false, "response shape matches the original contract");
+  });
+
   test("absent cap config uses conservative defaults, never unlimited", () => {
     assert.equal(usage.dailyCap("answer"), usage.DEFAULT_DAILY_CAPS.answer);
     assert.equal(usage.dailyCap("embedding"), usage.DEFAULT_DAILY_CAPS.embedding);

@@ -1,24 +1,23 @@
 /**
  * Ask pipeline (server-only): scoped retrieval -> grounded synthesis -> handoff contract.
- * Shared by /api/ask, /api/ask/context, /api/search and the MCP tools.
+ * Shared by /api/ask, /api/search and the MCP tools.
  *
- * Every site-funded call (query embedding, site-model answer) goes through
+ * Every site-funded call (query embedding, answer completion) goes through
  * usage.withSiteCall, which applies the process concurrency gate and the daily
- * cap. Visitor-key answers use the visitor's provider and are never cached or
- * persisted; their retrieval embedding is still site-funded and capped.
+ * cap for that call kind.
  */
 import { createHash } from "node:crypto";
 import { sql, matchChunksScoped, type ScopedChunk } from "./db";
 import { getClient } from "./llm";
 import { isoDate } from "./format";
 import { decodeEntities } from "./text";
-import { withSiteCall } from "./usage";
+import { assertSiteBudgetLeft, withSiteCall } from "./usage";
 import { cacheGet, cacheSet } from "./ratelimit";
 import {
   ANSWER_MAX_TOKENS, CONTEXT_SEGMENTS, assembleAnswer, buildMessages, parseModelOutput, type ChatMessage,
 } from "./ask-core";
 import type { Scope } from "./limits";
-import type { AskContextItem, AskEmpty, AskFilters, AskGeneratedBy, AskResponse } from "./ask-types";
+import type { AskContextItem, AskEmpty, AskFilters, AskResponse } from "./ask-types";
 
 // Cast a wide net for retrieval, then enforce a stricter quality gate so we never
 // synthesize from weak matches (no hallucinated answers — HANDOFF acceptance).
@@ -112,35 +111,23 @@ export async function retrieveContext(query: string, scope: Scope): Promise<AskC
 }
 
 // ---------------------------------------------------------------------------
-// Synthesis engines
+// Synthesis (site model; budgeted per call)
 // ---------------------------------------------------------------------------
 
-export interface Synthesizer {
-  generatedBy: AskGeneratedBy;
-  /** Site-funded engines are budgeted, cached and (optionally) persisted. */
-  siteFunded: boolean;
-  complete(messages: ChatMessage[]): Promise<string>;
-}
-
-export function siteSynthesizer(): Synthesizer {
-  return {
-    generatedBy: { engine: "site", provider: "openai", model: SITE_MODEL },
-    siteFunded: true,
-    complete: (messages) =>
-      withSiteCall("answer", async () => {
-        const completion = await getClient().chat.completions.create(
-          {
-            model: SITE_MODEL,
-            max_tokens: ANSWER_MAX_TOKENS,
-            temperature: 0.4,
-            response_format: { type: "json_object" },
-            messages,
-          },
-          { timeout: SITE_CALL_TIMEOUT_MS, maxRetries: 0 }
-        );
-        return completion.choices[0]?.message?.content ?? "";
-      }),
-  };
+function completeWithSiteModel(messages: ChatMessage[]): Promise<string> {
+  return withSiteCall("answer", async () => {
+    const completion = await getClient().chat.completions.create(
+      {
+        model: SITE_MODEL,
+        max_tokens: ANSWER_MAX_TOKENS,
+        temperature: 0.4,
+        response_format: { type: "json_object" },
+        messages,
+      },
+      { timeout: SITE_CALL_TIMEOUT_MS, maxRetries: 0 }
+    );
+    return completion.choices[0]?.message?.content ?? "";
+  });
 }
 
 function persistEnabled(): boolean {
@@ -156,32 +143,26 @@ export async function askArchive(
   query: string,
   scope: Scope,
   filters: AskFilters | undefined,
-  opts: { withCitations?: boolean; persist?: boolean; requestId?: string; synthesizer?: Synthesizer } = {}
+  opts: { withCitations?: boolean; persist?: boolean; requestId?: string } = {}
 ): Promise<(AskResponse & { cached?: boolean }) | AskEmpty> {
   const withCitations = opts.withCitations ?? true;
-  const synth = opts.synthesizer ?? siteSynthesizer();
 
-  const cacheKey = synth.siteFunded
-    ? `ask:v2:${normaliseQuery(query).toLowerCase()}:${JSON.stringify(filters ?? {})}:${withCitations}`
-    : null;
-  if (cacheKey) {
-    const cached = cacheGet<AskResponse>(cacheKey);
-    if (cached) return { ...cached, cached: true };
-  }
+  const cacheKey = `ask:v2:${normaliseQuery(query).toLowerCase()}:${JSON.stringify(filters ?? {})}:${withCitations}`;
+  const cached = cacheGet<AskResponse>(cacheKey);
+  if (cached) return { ...cached, cached: true };
 
+  // Don't pay for retrieval when today's answers are already used up.
+  await assertSiteBudgetLeft("answer");
   const context = await retrieveContext(query, scope);
   if (!context) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
 
-  const raw = await synth.complete(buildMessages(query, context));
-  const result = assembleAnswer(query, context, parseModelOutput(raw), {
-    withCitations,
-    generatedBy: synth.generatedBy,
-  });
+  const raw = await completeWithSiteModel(buildMessages(query, context));
+  const result = assembleAnswer(query, context, parseModelOutput(raw), { withCitations });
   if (!result) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
 
-  if (cacheKey) cacheSet(cacheKey, result, ANSWER_CACHE_TTL_S);
+  cacheSet(cacheKey, result, ANSWER_CACHE_TTL_S);
 
-  if (opts.persist && synth.siteFunded && persistEnabled()) {
+  if (opts.persist && persistEnabled()) {
     try {
       await sql`
         INSERT INTO answers (question, answer, lede, citations, sources, scope, request_id)

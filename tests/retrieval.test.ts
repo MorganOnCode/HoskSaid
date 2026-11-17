@@ -175,7 +175,6 @@ describe("scoped exact retrieval", { skip: SKIP_DB }, () => {
     // Citations map to real segment ids of that video.
     const ids = new Set(all.filter((r) => r.youtube === "TARGETvid01").map((r) => r.id));
     assert.ok(res.citations.every((c) => ids.has(c.segment_id)));
-    assert.deepEqual(res.generated_by, { engine: "site", provider: "openai", model: "gpt-4o-mini" });
   });
 
   test("date-scoped Ask ('last N days' style) only cites in-window videos", async () => {

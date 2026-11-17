@@ -23,14 +23,6 @@ export interface AskSource {
   similarity: number;
 }
 
-/** Which engine produced an answer (additive to the handoff contract). */
-export interface AskGeneratedBy {
-  /** site = the site's own key; user_key = the visitor's provider key; local = the visitor's local model. */
-  engine: "site" | "user_key" | "local";
-  provider: string;
-  model: string;
-}
-
 /** POST /api/ask 200 response (also the search_archive MCP tool result). */
 export interface AskResponse {
   query: string;
@@ -38,7 +30,6 @@ export interface AskResponse {
   lede: string;
   citations: AskCitation[];
   sources: AskSource[];
-  generated_by?: AskGeneratedBy;
 }
 
 /** A numbered transcript segment supplied to the model as grounding context. */
@@ -51,13 +42,6 @@ export interface AskContextItem {
   start_seconds: number | null;
   similarity: number; // 0-100
   text: string;
-}
-
-/** POST /api/ask/context 200 response: grounding context for browser-local synthesis. */
-export interface AskContextResponse {
-  query: string;
-  prompt_version: string;
-  context: AskContextItem[];
 }
 
 /** 422 — nothing cleared the relevance threshold. */

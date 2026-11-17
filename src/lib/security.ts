@@ -4,10 +4,6 @@
  * The Content-Security-Policy carries a per-request nonce, which Next applies
  * to its own inline scripts; that requires dynamic rendering, so public data is
  * cached at the data layer (lib/cache.ts) instead of as static HTML.
- *
- * connect-src allows http://localhost and http://127.0.0.1 on any port so the
- * opt-in "local model" engine can reach a model server on the VISITOR's own
- * machine from their browser. The server never fetches these origins.
  */
 export function buildCsp(nonce: string, opts: { dev?: boolean } = {}): string {
   const dev = !!opts.dev;
@@ -17,7 +13,7 @@ export function buildCsp(nonce: string, opts: { dev?: boolean } = {}): string {
     "style-src": ["'self'", "'unsafe-inline'"],
     "img-src": ["'self'", "data:", "blob:", "https://i.ytimg.com"],
     "font-src": ["'self'"],
-    "connect-src": ["'self'", "http://localhost:*", "http://127.0.0.1:*", ...(dev ? ["ws:"] : [])],
+    "connect-src": ["'self'", ...(dev ? ["ws:"] : [])],
     "frame-src": ["https://www.youtube.com", "https://www.youtube-nocookie.com"],
     "media-src": ["'self'"],
     "object-src": ["'none'"],

@@ -21,7 +21,15 @@ export const migrateCommand: Command = {
       return 0;
     }
     const sub = positionals[0] ?? "status";
+    if (positionals.length > 1) {
+      emit({ error: `unexpected argument ${positionals[1]}`, help: USAGE });
+      return 2;
+    }
     if (sub === "status") {
+      if (flags["dry-run"] || flags.to !== undefined) {
+        emit({ error: "--dry-run and --to apply only to `migrate apply`", help: USAGE });
+        return 2;
+      }
       const status = await migrationStatus(sql);
       const invalid = await invalidIndexes(sql);
       const pending = status.filter((m) => m.state === "pending").length;

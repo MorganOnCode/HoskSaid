@@ -84,6 +84,20 @@ export async function reserveSiteCalls(kind: SiteCallKind, n = 1, now = new Date
   return rows[0].calls;
 }
 
+/**
+ * Cheap read-only pre-check: throw BudgetExceededError when today's cap for
+ * `kind` is already spent, so a request that cannot finish never starts paying
+ * for earlier steps. Not a reservation; reserveSiteCalls stays authoritative.
+ */
+export async function assertSiteBudgetLeft(kind: SiteCallKind, now = new Date()): Promise<void> {
+  const cap = dailyCap(kind);
+  if (cap === 0) throw new BudgetExceededError(kind);
+  const rows = await sql<{ calls: number }[]>`
+    SELECT calls FROM site_usage_daily WHERE day = ${utcDay(now)} AND kind = ${kind}
+  `;
+  if (rows.length && rows[0].calls >= cap) throw new BudgetExceededError(kind);
+}
+
 export async function usageToday(now = new Date()): Promise<Record<SiteCallKind, { used: number; cap: number }>> {
   const rows = await sql<{ kind: SiteCallKind; calls: number }[]>`
     SELECT kind, calls FROM site_usage_daily WHERE day = ${utcDay(now)}
@@ -156,15 +170,14 @@ function envInt(name: string, def: number, min: number, max: number): number {
 }
 
 declare global {
-  var __hosksaidGates: { site: Semaphore; user: Semaphore } | undefined;
+  var __hosksaidGates: { site: Semaphore } | undefined;
 }
 
-/** Process-wide gates (kept on globalThis so dev hot-reload does not multiply them). */
-export function gates(): { site: Semaphore; user: Semaphore } {
+/** Process-wide gate (kept on globalThis so dev hot-reload does not multiply it). */
+export function gates(): { site: Semaphore } {
   if (!globalThis.__hosksaidGates) {
     globalThis.__hosksaidGates = {
       site: new Semaphore(envInt("SITE_MAX_CONCURRENT_CALLS", 4, 1, 64), 32, 15_000),
-      user: new Semaphore(envInt("USER_PROVIDER_MAX_CONCURRENT_CALLS", 4, 1, 64), 32, 15_000),
     };
   }
   return globalThis.__hosksaidGates;
@@ -175,16 +188,6 @@ export async function withSiteCall<T>(kind: SiteCallKind, fn: () => Promise<T>):
   const release = await gates().site.acquire();
   try {
     await reserveSiteCalls(kind, 1);
-    return await fn();
-  } finally {
-    release();
-  }
-}
-
-/** Run one visitor-key/provider call under its own concurrency gate (no site budget). */
-export async function withUserProviderCall<T>(fn: () => Promise<T>): Promise<T> {
-  const release = await gates().user.acquire();
-  try {
     return await fn();
   } finally {
     release();
