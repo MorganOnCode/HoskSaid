@@ -10,6 +10,7 @@ import { SKIP_DB, createTestDb, seedVideo, type TestDb } from "./helpers/db";
 import { fakeDraftModel } from "./helpers/fake-draft-model";
 import { addMonths, monthWindow } from "../src/lib/digest/period";
 import { checkGrounding } from "../src/lib/digest/grounding";
+import { postText } from "../src/lib/render/post";
 import type { Post } from "../src/lib/posts";
 
 const NOW = new Date("2026-11-15T00:00:00Z");
@@ -318,40 +319,90 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal((await gen({ model: garbled })).status, "unchanged");
     assert.equal(garbled.byStage("final"), 0);
     assert.equal((await posts.getPostByPeriod("2026-10"))!.revision, 1);
-    // A different failure reason on the retry (model_failed -> no_grounded_notes) is still the same input.
-    const ungrounded = fakeDraftModel({
-      reply: (stage, user, def) => (stage === "notes" && user.includes("Hydra update") ? { notes: [{ text: "Charles endorsed Solana and a 1000x rally.", cites: ["V"] }] } : def),
-    });
-    assert.equal((await gen({ model: ungrounded })).status, "unchanged");
-    assert.equal(ungrounded.byStage("notes"), 1);
-    assert.equal(ungrounded.byStage("final"), 0);
-    const [ungroundedRun] = await db.sql`SELECT outcome, detail FROM post_generation_runs ORDER BY id DESC LIMIT 1`;
-    assert.equal(ungroundedRun.outcome, "unchanged");
-    assert.ok(ungroundedRun.detail.missing.some((m: { video_id: string; reason: string }) => m.video_id === "OCTvideo002" && m.reason === "no_grounded_notes"));
-    // not_attempted -> model_failed: likewise unchanged.
+    const missingReason = (p: Post) => p.coverage.missing.find((m) => m.video_id === "OCTvideo002")?.reason;
+    const lastRun = async () => (await db.sql`SELECT outcome, calls, detail FROM post_generation_runs ORDER BY id DESC LIMIT 1`)[0];
+
+    // not_attempted -> model_failed: no resynthesis; only the stored reason (a metadata revision) changes.
     await db.sql`
       UPDATE posts SET coverage = jsonb_set(coverage, '{missing}', (
         SELECT jsonb_agg(CASE WHEN m->>'video_id' = 'OCTvideo002' THEN jsonb_set(m, '{reason}', '"not_attempted"') ELSE m END)
         FROM jsonb_array_elements(coverage->'missing') m))
       WHERE period = '2026-10'`;
     const failsAgain = fakeDraftModel({ fail: (stage, user) => stage === "notes" && user.includes("Hydra update") });
-    assert.equal((await gen({ model: failsAgain })).status, "unchanged");
+    const reasonOnly = await gen({ model: failsAgain });
+    assert.equal(reasonOnly.status, "updated");
+    assert.equal(failsAgain.byStage("notes"), 1);
     assert.equal(failsAgain.byStage("final"), 0);
-    const stillKept = (await posts.getPostByPeriod("2026-10"))!;
-    assert.equal(stillKept.revision, 1);
-    assert.deepEqual(stillKept.body, r.post.body);
+    let post = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(post.revision, 2);
+    assert.equal(missingReason(post), "model_failed");
+    assert.deepEqual(post.body, r.post.body);
+    assert.deepEqual(post.sources, r.post.sources);
+    assert.equal((await lastRun()).outcome, "coverage_updated");
 
-    // Retry once the provider recovers: only the failed video's notes are requested.
+    // Transient failure -> terminal no_grounded_notes: same input, coverage now says why.
+    const ungrounded = fakeDraftModel({
+      reply: (stage, user, def) => (stage === "notes" && user.includes("Hydra update") ? { notes: [{ text: "Charles endorsed Solana and a 1000x rally.", cites: ["V"] }] } : def),
+    });
+    assert.equal((await gen({ model: ungrounded })).status, "updated");
+    assert.equal(ungrounded.byStage("notes"), 1);
+    assert.equal(ungrounded.byStage("final"), 0);
+    post = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(post.revision, 3);
+    assert.equal(missingReason(post), "no_grounded_notes");
+    assert.deepEqual(post.body, r.post.body);
+    assert.deepEqual(post.sources, r.post.sources);
+    assert.match(postText(post, ""), /Hydra update \(no statement passed the source check\)/, "displayed coverage matches the post reason");
+    const ev = await posts.postEvents(post.id);
+    assert.deepEqual(ev.map((e) => [e.action, e.revision]), [["generated", 1], ["regenerated", 2], ["regenerated", 3]]);
+
+    // A later scheduled recheck spends nothing on the unchanged input.
+    const recheck = fakeDraftModel();
+    const quiet = await gen({ model: recheck, trigger: "schedule", now: new Date(NOW.getTime() + 86_400_000) });
+    assert.equal(quiet.status, "unchanged");
+    assert.equal(recheck.calls.length, 0);
+    assert.equal((await lastRun()).calls, 0);
+    assert.equal((await posts.getPostByPeriod("2026-10"))!.revision, 3);
+
+    // Changed source material is new input: that video is noted again and the draft resynthesised.
+    await db.sql`UPDATE transcripts SET summary = '• Hydra heads processed thousands of transactions in new tests.' WHERE video_id = (SELECT id FROM videos WHERE youtube_id = 'OCTvideo002')`;
     const ok = fakeDraftModel();
     const again = await gen({ model: ok });
+    await db.sql`UPDATE transcripts SET summary = '• Hydra heads are now processing thousands of transactions in tests.' WHERE video_id = (SELECT id FROM videos WHERE youtube_id = 'OCTvideo002')`;
     assert.equal(again.status, "updated");
-    assert.equal(ok.byStage("notes"), 1);
+    assert.equal(ok.byStage("notes"), 1, "only the changed video's notes are requested");
     assert.equal(ok.byStage("final"), 1);
     if (again.status === "updated") {
-      assert.equal(again.post.revision, 2);
-      assert.ok(!again.post.coverage.missing.some((m) => m.reason === "model_failed"));
+      assert.equal(again.post.revision, 4);
+      assert.equal(missingReason(again.post), undefined);
+      assert.ok(again.post.sources.some((x) => x.video_id === "OCTvideo002"));
     }
     assert.equal(await count("posts"), 1);
+  });
+
+  test("a publication during a retry wins over the coverage update", async () => {
+    const r = await gen({ model: fakeDraftModel({ fail: (stage, user) => stage === "notes" && user.includes("Hydra update") }) });
+    assert.equal(r.status, "created");
+    if (r.status !== "created") return;
+    const base = fakeDraftModel({
+      reply: (stage, user, def) => (stage === "notes" && user.includes("Hydra update") ? { notes: [{ text: "Charles endorsed Solana and a 1000x rally.", cites: ["V"] }] } : def),
+    });
+    const racing = {
+      ...base,
+      async complete(input: { system: string; user: string; maxTokens: number }) {
+        if (input.user.includes("Hydra update")) {
+          assert.ok((await posts.publishPost("2026-10", { by: "firstmate", revision: 1, acceptIncomplete: true })).changed);
+        }
+        return base.complete(input);
+      },
+    };
+    const res = await gen({ model: racing });
+    assert.equal(res.status, "kept");
+    const p = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(p.status, "published");
+    assert.equal(p.revision, 1);
+    assert.deepEqual(p.coverage, r.post.coverage, "published coverage is not mutated");
+    assert.deepEqual(p.body, r.post.body);
   });
 
   test("unusable synthesis writes nothing; notes are kept for the retry", async () => {

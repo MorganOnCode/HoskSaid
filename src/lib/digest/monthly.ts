@@ -632,9 +632,32 @@ async function runLocked(
     // A retry that produced no new usable notes leaves the synthesis input as it was: keep the draft.
     const videoIds = (list: PostSource[]) => JSON.stringify(list.map((x) => x.video_id));
     if (current && current.input_hash === inputHash && videoIds(sources) === videoIds(current.sources)) {
-      const reason = "retried videos produced no new usable notes; the draft is unchanged";
-      await finishRun(runId, "unchanged", calls, { reason, missing, rejected, rejected_total: rejectedTotal });
-      return { status: "unchanged", post: current, calls };
+      const missingKey = (list: PostCoverage["missing"]) => JSON.stringify(list.map((m) => [m.video_id, m.reason]));
+      if (missingKey(missing) === missingKey(current.coverage.missing)) {
+        const reason = "retried videos produced no new usable notes; the draft is unchanged";
+        await finishRun(runId, "unchanged", calls, { reason, missing, rejected, rejected_total: rejectedTotal });
+        return { status: "unchanged", post: current, calls };
+      }
+      const coverage = coverageOf(current.coverage.videos_covered);
+      const updated = await sql.begin(async (tx) => {
+        const [row] = await tx<Post[]>`
+          UPDATE posts SET coverage = ${sql.json(coverage as unknown as Parameters<typeof sql.json>[0])}, revision = revision + 1, updated_at = now()
+          WHERE id = ${current.id} AND status = 'draft' AND revision = ${current.revision}
+          RETURNING *
+        `;
+        if (!row) return null;
+        await tx`INSERT INTO post_events (post_id, action, actor, revision, detail)
+                 VALUES (${row.id}, 'regenerated', ${`generator:${trigger}`}, ${row.revision}, ${sql.json({ calls, coverage_only: true, complete: coverage.complete })})`;
+        return row;
+      });
+      if (!updated) {
+        const kept = (await sql<Post[]>`SELECT * FROM posts WHERE kind = 'monthly' AND period = ${opts.period}`)[0];
+        await finishRun(runId, "kept", calls, { reason: "post changed concurrently", missing });
+        return { status: "kept", post: kept, reason: "post was published or regenerated during the retry; not overwritten", new_videos: [] };
+      }
+      const reason = "retried videos produced no new usable notes; only the missing-video reasons changed (body and sources unchanged)";
+      await finishRun(runId, "coverage_updated", calls, { reason, missing, rejected, rejected_total: rejectedTotal });
+      return { status: "updated", post: updated, calls };
     }
 
     if (!noted.length) {
