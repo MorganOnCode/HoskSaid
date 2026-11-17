@@ -79,7 +79,7 @@ Every call paid with the site's `OPENAI_API_KEY` passes a per-process concurrenc
 | `CLIENT_QUOTA_SECRET` | random per process | HMAC key for stored client identifiers; set it so allowances survive restarts |
 | `SITE_MAX_CONCURRENT_CALLS` | 4 | in-flight site calls per process; queued callers wait up to 15 s, then `503 busy` |
 
-When a cap is reached, Ask, search and MCP return `503 site_budget_exhausted` with `Retry-After` set to the next UTC midnight and `budget` naming the cap (`answer` or `embedding`). The embedding cap also blocks Ask, because every answer needs a query embedding; Library keyword search needs neither. Once the answer cap is spent, Ask refuses before paying for retrieval. Absent or invalid configuration falls back to the defaults. There is no "unlimited" value.
+When a cap is reached, Ask, search and MCP return `503 site_budget_exhausted` with `Retry-After` set to the next UTC midnight and `budget` naming the cap (`answer` or `embedding`). The embedding cap also blocks Ask, because every answer needs a query embedding; Library keyword search needs neither. Each Ask reserves its answer (client allowance and site cap together) before paying for retrieval, so a refused Ask makes no paid call even under concurrency; the reservation is handed back if the answer model is never called (no match, or retrieval refused or failed). Absent or invalid configuration falls back to the defaults. There is no "unlimited" value.
 
 When one client's allowance is spent, that client gets `429 client_quota_exhausted` (same `budget` and `Retry-After` fields) and no paid call is made; other clients are unaffected. The client defaults are development values chosen well below the site caps. Production values are an activation decision for the operator.
 

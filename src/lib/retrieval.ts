@@ -3,8 +3,9 @@
  * Shared by /api/ask, /api/search and the MCP tools.
  *
  * Every site-funded call (query embedding, answer completion) goes through
- * usage.withSiteCall, which applies the process concurrency gate, the calling
- * client's daily allowance and the site's daily cap for that call kind.
+ * usage.withSiteCall (or, for the answer, a reservation taken before retrieval
+ * via usage.reserveSiteCall), which applies the process concurrency gate, the
+ * calling client's daily allowance and the site's daily cap for that call kind.
  * `client` is the limiter identity from ratelimit.clientIdentity.
  */
 import { createHash } from "node:crypto";
@@ -12,7 +13,7 @@ import { sql, matchChunksScoped, type ScopedChunk } from "./db";
 import { getClient } from "./llm";
 import { isoDate } from "./format";
 import { decodeEntities } from "./text";
-import { assertSiteBudgetLeft, withSiteCall } from "./usage";
+import { reserveSiteCall, withReservedSiteCall, withSiteCall, type SiteReservation } from "./usage";
 import { cacheGet, cacheSet } from "./ratelimit";
 import {
   ANSWER_MAX_TOKENS, CONTEXT_SEGMENTS, assembleAnswer, buildMessages, parseModelOutput, type ChatMessage,
@@ -115,8 +116,8 @@ export async function retrieveContext(query: string, scope: Scope, client: strin
 // Synthesis (site model; budgeted per call)
 // ---------------------------------------------------------------------------
 
-function completeWithSiteModel(messages: ChatMessage[], client: string): Promise<string> {
-  return withSiteCall("answer", client, async () => {
+function completeWithSiteModel(messages: ChatMessage[], reservation: SiteReservation): Promise<string> {
+  return withReservedSiteCall(reservation, async () => {
     const completion = await getClient().chat.completions.create(
       {
         model: SITE_MODEL,
@@ -152,13 +153,20 @@ export async function askArchive(
   const cached = cacheGet<AskResponse>(cacheKey);
   if (cached) return { ...cached, cached: true };
 
-  // Don't pay for retrieval when today's answers are already used up.
-  await assertSiteBudgetLeft("answer", opts.client);
-  const context = await retrieveContext(query, scope, opts.client);
-  if (!context) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
-
-  const raw = await completeWithSiteModel(buildMessages(query, context), opts.client);
-  const result = assembleAnswer(query, context, parseModelOutput(raw), { withCitations });
+  // Secure this Ask's answer allowance before paying for retrieval; hand it
+  // back if the answer model is never attempted (no match, retrieval error).
+  const reservation = await reserveSiteCall("answer", opts.client);
+  let result: AskResponse | null;
+  try {
+    const context = await retrieveContext(query, scope, opts.client);
+    if (!context) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
+    const raw = await completeWithSiteModel(buildMessages(query, context), reservation);
+    result = assembleAnswer(query, context, parseModelOutput(raw), { withCitations });
+  } finally {
+    await reservation.release().catch((e) => {
+      console.error("Failed to release answer reservation:", e instanceof Error ? e.message : "unknown error");
+    });
+  }
   if (!result) return { matched: 0, suggestions: BROADEN_SUGGESTIONS };
 
   cacheSet(cacheKey, result, ANSWER_CACHE_TTL_S);

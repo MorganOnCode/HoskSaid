@@ -162,25 +162,44 @@ export async function reserveSiteCalls(kind: SiteCallKind, client: string, n = 1
   });
 }
 
+/** One reserved site-funded call, held until its provider call is attempted. */
+export interface SiteReservation {
+  /** Hand the call back if it was never attempted; a no-op once used or released. */
+  release(): Promise<void>;
+  /** Mark the call as attempted, so it can no longer be released. */
+  markUsed(): void;
+}
+
 /**
- * Cheap read-only pre-check: throw BudgetExceededError when today's site cap
- * or `client`'s allowance for `kind` is already spent, so a request that
- * cannot finish never starts paying for earlier steps. Not a reservation;
- * reserveSiteCalls stays authoritative.
+ * Reserve one call of `kind` for `client` now (as reserveSiteCalls) and hold
+ * it, so a multi-step request can secure its final paid call before paying
+ * for earlier steps. Release always decrements the original UTC day's rows,
+ * even after midnight, and never below zero.
  */
-export async function assertSiteBudgetLeft(kind: SiteCallKind, client: string, now = new Date()): Promise<void> {
-  const cap = dailyCap(kind);
-  const clientCap = clientDailyCap(kind);
-  if (cap === 0) throw new BudgetExceededError(kind, "site");
-  if (clientCap === 0) throw new BudgetExceededError(kind, "client");
+export async function reserveSiteCall(kind: SiteCallKind, client: string, now = new Date()): Promise<SiteReservation> {
   const day = utcDay(now);
-  const [row] = await sql<{ site: number | null; mine: number | null }[]>`
-    SELECT
-      (SELECT calls FROM site_usage_daily WHERE day = ${day} AND kind = ${kind}) AS site,
-      (SELECT calls FROM client_usage_daily WHERE day = ${day} AND client = ${clientQuotaKey(client, day)} AND kind = ${kind}) AS mine
-  `;
-  if ((row?.site ?? 0) >= cap) throw new BudgetExceededError(kind, "site");
-  if ((row?.mine ?? 0) >= clientCap) throw new BudgetExceededError(kind, "client");
+  await reserveSiteCalls(kind, client, 1, now);
+  const key = clientQuotaKey(client, day);
+  let settled = false;
+  return {
+    markUsed() {
+      settled = true;
+    },
+    async release() {
+      if (settled) return;
+      settled = true;
+      await sql.begin(async (tx) => {
+        await tx`
+          UPDATE client_usage_daily SET calls = calls - 1
+          WHERE day = ${day} AND client = ${key} AND kind = ${kind} AND calls > 0
+        `;
+        await tx`
+          UPDATE site_usage_daily SET calls = calls - 1, updated_at = now()
+          WHERE day = ${day} AND kind = ${kind} AND calls > 0
+        `;
+      });
+    },
+  };
 }
 
 export async function usageToday(now = new Date()): Promise<Record<SiteCallKind, { used: number; cap: number }>> {
@@ -266,6 +285,17 @@ export function gates(): { site: Semaphore } {
     };
   }
   return globalThis.__hosksaidGates;
+}
+
+/** Run an already reserved site-funded call: wait for a slot, mark the reservation used, then call. */
+export async function withReservedSiteCall<T>(reservation: SiteReservation, fn: () => Promise<T>): Promise<T> {
+  const release = await gates().site.acquire();
+  try {
+    reservation.markUsed();
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 /** Run one site-funded call: wait for a slot, reserve today's client and site budget, then call. */

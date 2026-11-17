@@ -395,6 +395,72 @@ describe("paid-call bounds", { skip: SKIP_DB }, () => {
     }
   });
 
+  test("simultaneous Asks from one client: answer-cap refusals make no paid call (8 parallel, cap 2)", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.CLIENT_DAILY_ANSWER_CAP = "2";
+    fake.chatDelayMs = 30;
+    const res = await Promise.all(
+      Array.from({ length: 8 }, (_x, i) => askRoute.POST(post("/api/ask", { query: `simultaneous question ${i}` }, fromIp("203.0.113.30"))))
+    );
+    const statuses = res.map((r) => r.status).sort();
+    assert.deepEqual(statuses, [200, 200, 429, 429, 429, 429, 429, 429]);
+    for (const r of res.filter((x) => x.status === 429)) assert.equal((await r.json()).budget, "answer");
+    assert.equal(fake.calls.embeddings, 2, "only admitted Asks pay for a retrieval embedding");
+    assert.equal(fake.calls.chat, 2);
+    assert.equal(await siteCalls("answer"), 2);
+    assert.equal(await siteCalls("embedding"), 2, "refused Asks consume no global embedding budget");
+  });
+
+  test("an Ask that never reaches the answer model releases its answer reservation", async () => {
+    process.env.TRUST_CLOUDFLARE_IP = "true";
+    process.env.CLIENT_DAILY_ANSWER_CAP = "1";
+    const me = fromIp("203.0.113.40");
+    const original = fake.embeddingFor;
+    fake.embeddingFor = () => randomUnit(9001); // matches nothing in scope -> 422, no completion
+    try {
+      const miss = await askRoute.POST(post("/api/ask", { query: "nothing matches this" }, me));
+      assert.equal(miss.status, 422);
+    } finally {
+      fake.embeddingFor = original;
+    }
+    assert.equal(fake.calls.chat, 0);
+    assert.equal(await siteCalls("answer"), 0, "the unused answer reservation is released");
+    assert.equal(await siteCalls("embedding"), 1, "the attempted embedding stays charged");
+    const hit = await askRoute.POST(post("/api/ask", { query: "a question that matches" }, me));
+    assert.equal(hit.status, 200, "the released allowance is usable again");
+    assert.equal(await siteCalls("answer"), 1);
+
+    // Retrieval refused by the embedding allowance also hands the answer back.
+    process.env.CLIENT_DAILY_EMBEDDING_CAP = "2";
+    const other = fromIp("203.0.113.41");
+    assert.equal((await searchRoute.GET(new NextRequest("http://localhost/api/search?q=one", { headers: other }))).status, 200);
+    assert.equal((await searchRoute.GET(new NextRequest("http://localhost/api/search?q=two", { headers: other }))).status, 200);
+    const refused = await askRoute.POST(post("/api/ask", { query: "three" }, other));
+    assert.equal(refused.status, 429);
+    assert.equal((await refused.json()).budget, "embedding");
+    assert.equal(await siteCalls("answer"), 1);
+    const [{ total }] = await db.sql<{ total: number }[]>`SELECT COALESCE(SUM(calls), 0)::int AS total FROM client_usage_daily WHERE kind = 'answer'`;
+    assert.equal(total, 1);
+  });
+
+  test("a held answer reservation is released against its original day, once, never below zero", async () => {
+    process.env.CLIENT_DAILY_ANSWER_CAP = "1";
+    const late = new Date("2026-04-01T23:59:59Z");
+    const hold = await usage.reserveSiteCall("answer", "ip:192.0.2.88", late);
+    await assert.rejects(usage.reserveSiteCall("answer", "ip:192.0.2.88", late), (e) => e instanceof usage.BudgetExceededError && e.scope === "client");
+    // A new day's reservation by the same client lands on its own row.
+    const next = await usage.reserveSiteCall("answer", "ip:192.0.2.88", new Date("2026-04-02T00:00:01Z"));
+    await hold.release();
+    await hold.release();
+    const site = await db.sql<{ day: string; calls: number }[]>`SELECT day::text AS day, calls FROM site_usage_daily WHERE kind = 'answer' ORDER BY day`;
+    assert.deepEqual(site.map((r) => [r.day, r.calls]), [["2026-04-01", 0], ["2026-04-02", 1]]);
+    const mine = await db.sql<{ calls: number }[]>`SELECT calls FROM client_usage_daily WHERE kind = 'answer' AND day = '2026-04-02'`;
+    assert.deepEqual(mine.map((r) => r.calls), [1], "releasing yesterday's hold leaves today's allowance untouched");
+    await usage.withReservedSiteCall(next, async () => "attempted");
+    await next.release();
+    assert.equal((await db.sql<{ calls: number }[]>`SELECT calls FROM site_usage_daily WHERE day = '2026-04-02' AND kind = 'answer'`)[0].calls, 1, "an attempted call is never refunded");
+  });
+
   test("Ask body above 16 KiB and wrong content type are refused", async () => {
     const big = await askRoute.POST(post("/api/ask", JSON.stringify({ query: "ok", pad: "z".repeat(17 * 1024) })));
     assert.equal(big.status, 413);
