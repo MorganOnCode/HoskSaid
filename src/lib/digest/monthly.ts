@@ -629,10 +629,10 @@ async function runLocked(
     missing.sort((a, b) => a.video_id.localeCompare(b.video_id));
     const coverageOf = (covered: number) => baseCoverage(covered, missing, sampled);
 
-    // A retry whose failed videos failed again leaves the synthesis input as it was: keep the draft.
-    const missingKey = (list: PostCoverage["missing"]) => JSON.stringify(list.map((m) => [m.video_id, m.reason]));
-    if (current && current.input_hash === inputHash && missingKey(missing) === missingKey(current.coverage.missing)) {
-      const reason = `retried ${missing.filter((m) => m.reason === "model_failed" || m.reason === "not_attempted").length} video(s) without new notes; the draft is unchanged`;
+    // A retry that produced no new usable notes leaves the synthesis input as it was: keep the draft.
+    const videoIds = (list: PostSource[]) => JSON.stringify(list.map((x) => x.video_id));
+    if (current && current.input_hash === inputHash && videoIds(sources) === videoIds(current.sources)) {
+      const reason = "retried videos produced no new usable notes; the draft is unchanged";
       await finishRun(runId, "unchanged", calls, { reason, missing, rejected, rejected_total: rejectedTotal });
       return { status: "unchanged", post: current, calls };
     }

@@ -318,6 +318,28 @@ describe("monthly drafts", { skip: SKIP_DB }, () => {
     assert.equal((await gen({ model: garbled })).status, "unchanged");
     assert.equal(garbled.byStage("final"), 0);
     assert.equal((await posts.getPostByPeriod("2026-10"))!.revision, 1);
+    // A different failure reason on the retry (model_failed -> no_grounded_notes) is still the same input.
+    const ungrounded = fakeDraftModel({
+      reply: (stage, user, def) => (stage === "notes" && user.includes("Hydra update") ? { notes: [{ text: "Charles endorsed Solana and a 1000x rally.", cites: ["V"] }] } : def),
+    });
+    assert.equal((await gen({ model: ungrounded })).status, "unchanged");
+    assert.equal(ungrounded.byStage("notes"), 1);
+    assert.equal(ungrounded.byStage("final"), 0);
+    const [ungroundedRun] = await db.sql`SELECT outcome, detail FROM post_generation_runs ORDER BY id DESC LIMIT 1`;
+    assert.equal(ungroundedRun.outcome, "unchanged");
+    assert.ok(ungroundedRun.detail.missing.some((m: { video_id: string; reason: string }) => m.video_id === "OCTvideo002" && m.reason === "no_grounded_notes"));
+    // not_attempted -> model_failed: likewise unchanged.
+    await db.sql`
+      UPDATE posts SET coverage = jsonb_set(coverage, '{missing}', (
+        SELECT jsonb_agg(CASE WHEN m->>'video_id' = 'OCTvideo002' THEN jsonb_set(m, '{reason}', '"not_attempted"') ELSE m END)
+        FROM jsonb_array_elements(coverage->'missing') m))
+      WHERE period = '2026-10'`;
+    const failsAgain = fakeDraftModel({ fail: (stage, user) => stage === "notes" && user.includes("Hydra update") });
+    assert.equal((await gen({ model: failsAgain })).status, "unchanged");
+    assert.equal(failsAgain.byStage("final"), 0);
+    const stillKept = (await posts.getPostByPeriod("2026-10"))!;
+    assert.equal(stillKept.revision, 1);
+    assert.deepEqual(stillKept.body, r.post.body);
 
     // Retry once the provider recovers: only the failed video's notes are requested.
     const ok = fakeDraftModel();
