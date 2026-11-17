@@ -2,12 +2,12 @@ import { NextRequest } from "next/server";
 import manifest from "@/lib/contracts/mcp.json";
 import { askArchive } from "@/lib/retrieval";
 import {
-  searchSegments, getVideoApi, getTranscriptApi, getSegmentApi, listVideosApi, listTopicsApi,
+  searchSegments, keywordSearchApi, MAX_KEYWORD_QUERY, getVideoApi, getTranscriptApi, getSegmentApi, listVideosApi, listTopicsApi,
 } from "@/lib/api";
 import { clientIdentity, rateLimited } from "@/lib/ratelimit";
 import { readJsonBody } from "@/lib/body";
 import {
-  DEFAULT_SEARCH_LIMIT, MAX_MCP_BATCH, MAX_MCP_BODY_BYTES, MAX_SEARCH_LIMIT, clampInt, isYoutubeId,
+  DEFAULT_SEARCH_LIMIT, MAX_FILTER_VIDEO_IDS, MAX_MCP_BATCH, MAX_MCP_BODY_BYTES, MAX_SEARCH_LIMIT, clampInt, isYoutubeId,
   validateFilters, validateQuery,
 } from "@/lib/limits";
 import { describeError } from "@/lib/errors";
@@ -27,6 +27,23 @@ function requireQuery(a: Args): string {
   const q = validateQuery(a.query);
   if (!q.ok) throw new ToolInputError(q.detail ?? q.error);
   return q.value;
+}
+
+function optionalVideoIds(a: Args): string[] | undefined {
+  if (a.video_ids === undefined) return undefined;
+  if (!Array.isArray(a.video_ids) || a.video_ids.length > MAX_FILTER_VIDEO_IDS || !a.video_ids.every(isYoutubeId)) {
+    throw new ToolInputError(`video_ids must be an array of up to ${MAX_FILTER_VIDEO_IDS} video ids`);
+  }
+  return a.video_ids.length ? [...new Set(a.video_ids as string[])] : undefined;
+}
+
+function dateScope(a: Args) {
+  const f = validateFilters({
+    ...(a.date_from ? { date_from: a.date_from } : {}),
+    ...(a.date_to ? { date_to: a.date_to } : {}),
+  });
+  if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
+  return f.value.scope;
 }
 
 function requireVideoId(a: Args): string {
@@ -57,20 +74,32 @@ const TOOLS: Record<string, (a: Args, client: string) => Promise<unknown>> = {
     }
     return result;
   },
+  // Retrieval only: one site-funded query embedding (per-client and site
+  // embedding allowances apply), never an answer-model call.
   search_segments: async (a, client) => {
     const query = requireQuery(a);
     const videoId = a.video_id === undefined ? undefined : requireVideoId(a);
-    const f = validateFilters({
-      ...(a.date_from ? { date_from: a.date_from } : {}),
-      ...(a.date_to ? { date_to: a.date_to } : {}),
-    });
-    if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
+    const scope = dateScope(a);
     return searchSegments(query, {
       client,
       limit: clampInt(a.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
       videoId,
-      from: f.value.scope.from,
-      to: f.value.scope.to,
+      from: scope.from,
+      to: scope.to,
+    });
+  },
+  // Keyword retrieval: no model call and no embedding at all.
+  search_keyword: async (a) => {
+    if (typeof a.query !== "string" || !a.query.trim()) throw new ToolInputError("query is required");
+    if (a.query.trim().length > MAX_KEYWORD_QUERY) throw new ToolInputError(`query must be at most ${MAX_KEYWORD_QUERY} characters`);
+    const videoIds = optionalVideoIds(a);
+    const scope = dateScope(a);
+    return keywordSearchApi(a.query, {
+      youtubeIds: videoIds ?? null,
+      from: scope.from,
+      to: scope.to,
+      limit: a.limit,
+      offset: a.offset,
     });
   },
   get_video: async (a) => (await getVideoApi(requireVideoId(a))) ?? { error: "not_found" },

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAsk } from "./AskProvider";
+import { EngineChooser } from "./EngineChooser";
 import type { AskFilters } from "@/lib/ask-types";
 
 export interface Suggestion {
@@ -76,6 +77,8 @@ export function AskBox({
           <button className="send" aria-label="Ask" onClick={() => value.trim() && go(value)}>→</button>
         </div>
       </div>
+
+      <EngineChooser />
 
       <div className="suggest-row">
         {suggestions.map((s) => (

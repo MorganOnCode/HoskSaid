@@ -1,7 +1,7 @@
 {
   "$comment": "Illustrative MCP server manifest for thehosksaid.com. Adapt to the discovery format your runtime expects; the canonical contract is the live MCP handshake at the endpoint below.",
   "name": "thehosksaid",
-  "description": "Retrieval over an independent, AI-generated transcript index of Charles Hoskinson's public videos (talks, AMAs, whiteboards). Synthesized, citation-backed answers grounded in timestamped transcript segments.",
+  "description": "Retrieval over an independent, AI-generated transcript index of Charles Hoskinson's public videos (talks, AMAs, whiteboards). Use search_segments or search_keyword to get bounded, timestamped source passages with citations and answer with your own model; search_archive optionally returns an answer written by this site's model.",
   "version": "0.1.0",
   "homepage": "https://thehosksaid.com/agents",
   "transport": {
@@ -12,12 +12,12 @@
     "required": false,
     "scheme": "bearer",
     "header": "Authorization",
-    "note": "Anonymous access is rate-limited (60 req/min/IP, each JSON-RPC message counts; at most 8 messages per POST). Tools never modify the archive; search_archive spends a site-funded model call under a daily cap and stores the question and answer. Send 'Authorization: Bearer <key>' with a maintainer-issued key for 600 req/min. Unrecognized or empty bearer keys return 401."
+    "note": "Anonymous access is rate-limited (60 req/min/IP, each JSON-RPC message counts; at most 8 messages per POST). Send 'Authorization: Bearer <key>' with a maintainer-issued HoskSaid access key for 600 req/min; unrecognized or empty bearer keys return 401. This server never asks for, accepts or stores a model-provider key (OpenAI, Anthropic, OpenRouter or local): your MCP client keeps its own model credentials and runs its own model on the passages these tools return. Tools never modify the archive. search_segments spends one site-funded query embedding under per-client and site daily caps; search_keyword spends no model call at all; search_archive spends a site-funded answer under daily caps and stores the question and answer."
   },
   "tools": [
     {
       "name": "search_archive",
-      "description": "Synthesized, citation-backed answer to a natural-language question. The flagship retrieval tool.",
+      "description": "Answer written by THIS SITE'S model (site-funded, daily-capped per client and site-wide, question and answer stored), citation-backed from timestamped transcript segments. To answer with your own model instead, call search_segments or search_keyword and give the passages to your model.",
       "inputSchema": {
         "type": "object",
         "required": ["query"],
@@ -38,16 +38,32 @@
     },
     {
       "name": "search_segments",
-      "description": "Raw semantic search over every transcript segment, ranked by relevance.",
+      "description": "Retrieval only, no answer generated: semantic search returning up to 50 ranked transcript passages with video title, date, timestamp, deep link and a ready-made citation string, for your own model to read and cite. Each uncached query spends one site-funded embedding under per-client and site daily caps (your model credentials do not raise them); when they run out, use search_keyword.",
       "inputSchema": {
         "type": "object",
         "required": ["query"],
         "properties": {
           "query": { "type": "string", "maxLength": 1000 },
           "limit": { "type": "integer", "default": 10, "minimum": 1, "maximum": 50 },
-          "video_id": { "type": "string" },
+          "video_id": { "type": "string", "description": "Restrict to one video." },
           "date_from": { "type": "string", "format": "date" },
           "date_to": { "type": "string", "format": "date" }
+        }
+      }
+    },
+    {
+      "name": "search_keyword",
+      "description": "Retrieval only, no model call and no embedding: keyword matches in titles, tags and full transcripts with an excerpt, date and deep link. Also reaches videos that have no semantic segments. Follow up with get_transcript or get_segment for full passages.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "maxLength": 200, "description": "Postgres websearch syntax: words, \"quoted phrases\", OR, -exclude." },
+          "video_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+          "date_from": { "type": "string", "format": "date" },
+          "date_to": { "type": "string", "format": "date" },
+          "limit": { "type": "integer", "default": 10, "minimum": 1, "maximum": 50 },
+          "offset": { "type": "integer", "default": 0, "minimum": 0, "maximum": 1000 }
         }
       }
     },

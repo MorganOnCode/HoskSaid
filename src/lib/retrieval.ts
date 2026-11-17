@@ -48,7 +48,11 @@ function normaliseQuery(q: string): string {
   return q.replace(/\s+/g, " ").trim();
 }
 
-export async function embedQuery(query: string, client: string): Promise<number[]> {
+/**
+ * `cacheWrite: false` (visitor-key questions) still reuses a cached vector but
+ * never adds one, so those questions leave nothing behind in this process.
+ */
+export async function embedQuery(query: string, client: string, opts: { cacheWrite?: boolean } = {}): Promise<number[]> {
   const text = normaliseQuery(query);
   if (!text) return [];
   const key = createHash("sha256").update(text).digest("hex");
@@ -65,7 +69,7 @@ export async function embedQuery(query: string, client: string): Promise<number[
     );
     return res.data[0]?.embedding ?? [];
   });
-  if (v.length) {
+  if (v.length && opts.cacheWrite !== false) {
     if (embedCache.size >= EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value!);
     embedCache.set(key, { v, exp: Date.now() + EMBED_CACHE_TTL_MS });
   }
@@ -81,7 +85,7 @@ export function clearEmbeddingCache(): void {
 // Retrieval
 // ---------------------------------------------------------------------------
 
-function toContextItem(c: ScopedChunk, n: number): AskContextItem {
+export function toContextItem(c: ScopedChunk, n: number): AskContextItem {
   return {
     n,
     segment_id: c.id,
@@ -95,8 +99,14 @@ function toContextItem(c: ScopedChunk, n: number): AskContextItem {
 }
 
 /** Ranked in-scope chunks for a query (exact search, scope applied before LIMIT). */
-export async function retrieveChunks(query: string, scope: Scope, client: string, count = RETRIEVE_COUNT): Promise<ScopedChunk[]> {
-  const embedding = await embedQuery(query, client);
+export async function retrieveChunks(
+  query: string,
+  scope: Scope,
+  client: string,
+  count = RETRIEVE_COUNT,
+  opts: { cacheWrite?: boolean } = {}
+): Promise<ScopedChunk[]> {
+  const embedding = await embedQuery(query, client, opts);
   if (!embedding.length) return [];
   return await matchChunksScoped(embedding, RETRIEVE_THRESHOLD, count, scope);
 }

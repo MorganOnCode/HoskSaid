@@ -99,11 +99,15 @@ export function assembleAnswer(
   query: string,
   context: AskContextItem[],
   parsed: { lede: string; answer: string },
-  opts: { withCitations?: boolean } = {}
+  opts: { withCitations?: boolean; uncitedFallback?: boolean } = {}
 ): AskResponse | null {
   if (!parsed.answer) return null;
   const { text: answer, order } = renumberCitations(parsed.answer, context.length);
-  const citedIdx = order.length ? order : context.slice(0, 4).map((_c, i) => i + 1);
+  // Site answers historically list the top segments when the model cites none;
+  // visitor-key answers pass uncitedFallback: false so no source is attached
+  // that the answer did not actually cite.
+  const fallback = opts.uncitedFallback ?? true;
+  const citedIdx = order.length ? order : fallback ? context.slice(0, 4).map((_c, i) => i + 1) : [];
 
   const citations: AskCitation[] = [];
   const sources: AskSource[] = [];
@@ -137,4 +141,30 @@ export function assembleAnswer(
     citations: opts.withCitations === false ? [] : citations,
     sources,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Conversation (visitor-key follow-ups)
+// ---------------------------------------------------------------------------
+
+export const CONVERSE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
+
+This may be a follow-up in a short conversation. Earlier questions and answers are supplied only so you can tell what the new question refers to. They are NOT evidence: never repeat a claim from an earlier answer unless a numbered transcript segment below supports it, and cite only the numbered segments. If the segments do not answer the new question, say so plainly.`;
+
+export interface PromptHistoryTurn {
+  question: string;
+  answer: string;
+}
+
+/** System + one user message: earlier turns (context only), then the question and numbered segments. */
+export function buildConverseMessages(query: string, context: AskContextItem[], history: PromptHistoryTurn[]): ChatMessage[] {
+  const earlier = history.length
+    ? `--- EARLIER CONVERSATION (context only, not evidence) ---\n\n${history
+        .map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer.replace(/\[(\d+)\]/g, "")}`)
+        .join("\n\n")}\n\n--- END OF EARLIER CONVERSATION ---\n\n`
+    : "";
+  return [
+    { role: "system", content: CONVERSE_SYSTEM_PROMPT },
+    { role: "user", content: `${earlier}${buildUserMessage(query, context)}` },
+  ];
 }

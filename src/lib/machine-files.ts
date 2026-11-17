@@ -19,8 +19,9 @@ If you are an AI agent, prefer the structured retrieval interfaces below over sc
 
 ## Retrieval (preferred for agents)
 
-- [MCP server manifest](${BASE}/.well-known/mcp.json): Model Context Protocol server over Streamable HTTP at \`${BASE}/mcp\`. Tools: search_archive, search_segments, get_video, get_transcript, get_segment, list_videos, list_topics. No key required (rate-limited per message, at most 8 messages per request). Tools never modify the archive; search_archive spends a site-funded model call under a daily cap and stores the question and answer.
-- [Ask API](${BASE}/api/ask): POST a JSON body { "query": "..." (at most 1000 characters), "filters": {...} } and receive { answer, lede, citations[], sources[] }.
+- [MCP server manifest](${BASE}/.well-known/mcp.json): Model Context Protocol server over Streamable HTTP at \`${BASE}/mcp\`. Tools: search_archive, search_segments, search_keyword, get_video, get_transcript, get_segment, list_videos, list_topics. No key required (rate-limited per message, at most 8 messages per request). Tools never modify the archive. For your own model, use the retrieval-only tools: search_segments (one site-funded embedding under daily caps) and search_keyword (no model call) return passages with timestamps, links and citation strings, and never an answer. search_archive is the optional answer tool: it spends a site-funded model call under a daily cap and stores the question and answer. No tool accepts or stores a model-provider key.
+- [Ask API](${BASE}/api/ask): POST a JSON body { "query": "..." (at most 1000 characters), "filters": {...} } and receive { answer, lede, citations[], sources[] } written by the site's model.
+- [Keyword search API](${BASE}/api/search/keyword?q=hydra): GET keyword matches over titles, tags and full transcripts (video_id, date_from, date_to filters), with excerpts and links. No model call.
 - [OpenAPI spec](${BASE}/api/openapi.json): full schema for the REST fallback endpoints.
 - [Developer & agent guide](${BASE}/agents): human-readable docs, connection snippets, tool reference.
 

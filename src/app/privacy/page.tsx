@@ -7,8 +7,9 @@ export const dynamic = "force-dynamic";
 /**
  * Plain statement of what this deployment stores. Keep it in step with the
  * code: answers persistence (retrieval.ts), rate limiting (ratelimit.ts),
- * per-client daily allowances (usage.ts) and
- * browser storage (theme script). It describes storage as it is, not as it
+ * per-client daily allowances (usage.ts), visitor-key answers (converse.ts,
+ * byok-providers.ts, components/ask/engine-store.ts) and browser storage
+ * (theme script). It describes storage as it is, not as it
  * might be.
  */
 export default function PrivacyPage() {
@@ -37,6 +38,23 @@ export default function PrivacyPage() {
         <p>
           To answer, the question text is sent to OpenAI to compute a search embedding and generate the answer, under OpenAI&apos;s API terms.
           The home page&apos;s &ldquo;Most cited&rdquo; list only appears once at least five questions were asked in the past week.
+        </p>
+
+        <h2>Questions you ask with your own API key</h2>
+        <p>
+          If you choose &ldquo;Your own API key&rdquo;, you pick the provider (OpenAI, Anthropic or OpenRouter) and the model. Your key is kept
+          in that browser tab&apos;s memory only: it is not written to local or session storage, cookies or the URL, and it is gone when you
+          press <em>Forget key</em>, reload or close the tab. It does leave your device: with each question it is sent over HTTPS to this
+          site&apos;s server, which forwards it to that provider&apos;s official API host (<code>api.openai.com</code>,{" "}
+          <code>api.anthropic.com</code> or <code>openrouter.ai</code>) for that one request and then drops it. The server does not store,
+          log or cache the key, and does not use it to identify you.
+        </p>
+        <p>
+          The provider you chose receives your question, up to four earlier questions and answers from the same conversation, and the public
+          transcript excerpts the site found, under that provider&apos;s terms, and bills your account. These questions and answers are not
+          stored in the site&apos;s database or answer cache, and are not counted in &ldquo;Most cited&rdquo;. The conversation exists only on
+          your screen; <em>New conversation</em> or a reload discards it. To find the excerpts, the question text is still sent to OpenAI on the
+          site&apos;s account to compute a search embedding, which counts against the shared daily search allowance described below.
         </p>
 
         <h2>Searches</h2>
