@@ -24,10 +24,12 @@ export function EngineChooser() {
         <legend className="engine-lab">Answer with</legend>
         <label className={"engine-opt" + (e.mode === "site" ? " on" : "")}>
           <input type="radio" name={`${id}-mode`} value="site" checked={e.mode === "site"} onChange={() => setEngine({ mode: "site" })} />
+          <span className="engine-dot" aria-hidden="true" />
           <span>Site model <small>free · daily limit</small></span>
         </label>
         <label className={"engine-opt" + (e.mode === "byok" ? " on" : "")}>
           <input type="radio" name={`${id}-mode`} value="byok" checked={e.mode === "byok"} onChange={() => setEngine({ mode: "byok" })} />
+          <span className="engine-dot" aria-hidden="true" />
           <span>Your own API key <small>you choose the model · follow-ups</small></span>
         </label>
       </fieldset>

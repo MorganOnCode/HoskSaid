@@ -205,11 +205,13 @@ function FollowUp() {
     <div className="followup">
       {byok ? (
         <>
-          <label htmlFor={`${id}-fu`} className="followup-lab">
-            Follow-up with {engine.provider ? providerLabel(engine.provider) : "your key"}
-            {engine.model ? <> · <code>{engine.model}</code></> : null}
-            <span className="scope-chip"><span className="dotc" />{scopeLabel(filters)}</span>
-          </label>
+          <div className="followup-lab">
+            <label htmlFor={`${id}-fu`}>
+              Follow-up with {engine.provider ? providerLabel(engine.provider) : "your key"}
+              {engine.model ? <> · <code>{engine.model}</code></> : null}
+            </label>
+            <span className="scope-chip" title="Every turn of this conversation keeps this scope"><span className="dotc" />{scopeLabel(filters)}</span>
+          </div>
           <div className="fu-box">
             <textarea
               id={`${id}-fu`}

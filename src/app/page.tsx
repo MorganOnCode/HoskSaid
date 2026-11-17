@@ -36,7 +36,7 @@ export default async function HomePage() {
             <p className="ask-note">
               Ask searches the {formatCount(stats.searchable_videos)} videos with indexed segments
               {stats.searchable_videos < stats.videos ? <> ({formatCount(stats.videos - stats.searchable_videos)} older videos are keyword-searchable in the <Link href="/library">Library</Link> only)</> : null}.
-              Questions are stored; see <Link href="/privacy">privacy</Link>.
+              Site-model questions are stored; own-key questions are not. See <Link href="/privacy">privacy</Link>.
             </p>
 
             <Link className="agent-cue" href="/agents">

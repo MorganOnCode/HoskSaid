@@ -232,8 +232,11 @@ button.cite::after{content:'';position:absolute;left:50%;top:50%;width:max(100%,
 .engine{margin-top:12px;font-size:13.5px;color:var(--ink-2);}
 .engine-mode{border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;}
 .engine-lab{font-family:var(--font-mono);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-3);padding:0;margin-right:4px;float:left;}
-.engine-opt{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:6px 12px;border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2);cursor:pointer;color:var(--ink-2);}
-.engine-opt input{accent-color:var(--accent);width:16px;height:16px;margin:0;}
+.engine-opt{position:relative;display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:6px 12px;border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2);cursor:pointer;color:var(--ink-2);}
+/* The real radio covers the whole pill (full-size hit area); the dot is its visual. */
+.engine-opt input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+.engine-dot{width:14px;height:14px;flex:none;border-radius:999px;border:2px solid var(--line-bright);background:var(--surface);}
+.engine-opt.on .engine-dot{border-color:var(--accent);background:radial-gradient(circle, var(--accent) 0 3.5px, var(--surface) 4px);}
 .engine-opt small{color:var(--ink-3);font-size:12px;margin-left:4px;}
 .engine-opt.on{color:var(--accent-text);border-color:color-mix(in oklab, var(--accent) 35%, transparent);background:color-mix(in oklab, var(--accent) 10%, var(--surface-2));}
 .engine-opt:focus-within{outline:2px solid var(--accent-text);outline-offset:2px;}
@@ -255,12 +258,13 @@ button.cite::after{content:'';position:absolute;left:50%;top:50%;width:max(100%,
   .engine-grid{grid-template-columns:1fr;gap:6px;}
   .engine-grid label{margin-top:6px;}
   .engine-opt small{display:none;}
+  .engine-lab{float:none;width:100%;margin:0 0 2px;}
 }
 
 /* ---------- Conversation thread ---------- */
 .answer-shell .turn + .turn{margin-top:18px;}
 .answer-meta{padding:10px 26px 0;}
-.engine-badge{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.03em;color:var(--ink-3);padding:3px 9px;border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2);}
+.engine-badge{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.03em;color:var(--ink-3);padding:3px 9px;border-radius:10px;border:1px solid var(--line-2);background:var(--surface-2);}
 .engine-badge.byok{color:var(--accent-text);border-color:color-mix(in oklab, var(--accent) 30%, transparent);}
 .engine-badge code{font-family:inherit;overflow-wrap:anywhere;}
 .turn-note{font-size:13px;line-height:1.55;color:var(--ink-3);margin:0 0 10px;padding:8px 12px;border-left:3px solid var(--line-bright);background:var(--surface-2);border-radius:0 8px 8px 0;}
@@ -270,10 +274,10 @@ button.cite::after{content:'';position:absolute;left:50%;top:50%;width:max(100%,
 .kw-results{width:100%;margin-top:22px;text-align:left;}
 .kw-results .sources-head{padding:0;}
 .kw-list{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:8px;}
-.kw-hit{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);min-height:44px;}
+.kw-hit{display:flex;flex-direction:column;justify-content:center;gap:3px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);min-height:44px;}
 .kw-hit:hover{border-color:var(--line-bright);}
 .kw-title{font-weight:600;color:var(--ink);font-size:14px;overflow-wrap:anywhere;}
-.kw-meta{font-size:11px;color:var(--ink-3);}
+.kw-meta{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);}
 .kw-snip{font-size:13px;color:var(--ink-2);line-height:1.5;overflow-wrap:anywhere;}
 .kw-note{font-size:13px;color:var(--ink-3);margin-top:10px;}
 .kw-note a{text-decoration:underline;color:var(--accent-text);}

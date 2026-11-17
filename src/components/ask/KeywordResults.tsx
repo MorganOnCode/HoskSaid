@@ -63,7 +63,7 @@ export function KeywordResults({ query, filters }: { query: string; filters: Ask
             <li key={h.video_id}>
               <Link href={localPath(h.url)} className="kw-hit">
                 <span className="kw-title">{h.title}</span>
-                <span className="kw-meta mono">
+                <span className="kw-meta">
                   {h.published_at ?? "undated"} · matched in {h.matched_in ?? "video"}
                   {h.semantic_search_available ? "" : " · keyword-only video"}
                 </span>

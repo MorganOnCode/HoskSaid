@@ -53,7 +53,7 @@ export function describeConverseFailure(status: number | null, body: unknown): A
     return {
       code: `PROVIDER · ${code.toUpperCase()}`,
       title: PROVIDER_TITLES[code],
-      message: `${PROVIDER_MESSAGES[code]} (${label}.) This site did not answer with its own model instead.`,
+      message: `${label}: ${PROVIDER_MESSAGES[code]} This site did not answer with its own model instead.`,
       retryable: RETRYABLE_PROVIDER.includes(code),
     };
   }
