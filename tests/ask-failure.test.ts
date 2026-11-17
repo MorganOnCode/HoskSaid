@@ -31,6 +31,28 @@ test("the Ask UI distinguishes answer-cap from embedding-cap exhaustion", () => 
   assert.match(emb.message, /every answer needs one/);
 });
 
+test("a spent per-client allowance is non-retryable and distinct from the rate limit and the site budget", () => {
+  const ans = describeError(new BudgetExceededError("answer", "client"));
+  const emb = describeError(new BudgetExceededError("embedding", "client"));
+  assert.equal(ans.status, 429);
+  assert.equal(ans.body.error, "client_quota_exhausted");
+  const a = describeAskFailure(ans.status, ans.body);
+  const e = describeAskFailure(emb.status, emb.body);
+  const limited = describeAskFailure(429, { error: "rate_limited" });
+  const site = describeAskFailure(503, describeError(new BudgetExceededError("answer")).body);
+  assert.deepEqual([a.code, e.code], ["YOUR ANSWERS", "YOUR SEARCHES"]);
+  for (const f of [a, e]) {
+    assert.equal(f.retryable, false);
+    assert.notEqual(f.code, limited.code);
+    assert.notEqual(f.code, site.code);
+    assert.match(f.message, /Your own daily/);
+    assert.match(f.message, /00:00 UTC/);
+    assert.match(f.message, /Library keyword search still work/);
+    assert.doesNotMatch(f.message, /model|engine|api key|your key/i);
+  }
+  assert.equal(limited.retryable, true);
+});
+
 test("other failures map to specific, honest states", () => {
   assert.equal(describeAskFailure(503, { error: "busy" }).retryable, true);
   assert.equal(describeAskFailure(429, { error: "rate_limited" }).code, "RATE LIMIT");

@@ -41,6 +41,22 @@ export function describeAskFailure(status: number | null, body: unknown): AskFai
   if (status === 503 && error === "busy") {
     return { code: "BUSY", title: "The archive is busy", message: "Several questions are being answered right now. Retry in a few seconds.", retryable: true };
   }
+  if (status === 429 && error === "client_quota_exhausted") {
+    if (b.budget === "answer") {
+      return {
+        code: "YOUR ANSWERS",
+        title: "You’ve used today’s answers",
+        message: "Your own daily answer allowance is used up. Semantic segment search and Library keyword search still work. Your answers resume at 00:00 UTC.",
+        retryable: false,
+      };
+    }
+    return {
+      code: "YOUR SEARCHES",
+      title: "You’ve used today’s archive searches",
+      message: "Your own daily search allowance is used up, and every answer needs a search, so neither can run for you until 00:00 UTC. Library keyword search still works.",
+      retryable: false,
+    };
+  }
   if (status === 429) {
     return { code: "RATE LIMIT", title: "Too many questions at once", message: "You’ve hit the per-visitor rate limit. Wait a minute, then retry.", retryable: true };
   }
