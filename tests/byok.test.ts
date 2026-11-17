@@ -413,6 +413,22 @@ describe("visitor-key conversation", { skip: SKIP_DB }, () => {
     assert.ok(prompt.includes("funded by aliens ."), "earlier answers are stripped of their old [n] markers");
   });
 
+  test("carried citations that also match afresh do not take fresh slots", async () => {
+    const carriedIds = segA.slice(0, 6);
+    const res = await converse({
+      ...base,
+      query: "Say more about the treasury?",
+      filters: { video_ids: ["BYOKvidA001"] },
+      history: [{ question: "Treasury?", answer: "A.", segment_ids: carriedIds }],
+    });
+    assert.equal(res.status, 200);
+    const out = await res.json();
+    assert.equal(out.retrieval.carried_segments, 6, "every verified carried segment is supplied");
+    assert.equal(out.retrieval.fresh_segments, 2, "fresh slots go to segments not already carried");
+    const prompt = String((calls[0].body.messages as { content: string }[]).map((m) => m.content).join("\n"));
+    for (let c = 0; c < 8; c++) assert.ok(prompt.includes(`Talk A segment ${c} `), `segment ${c} reaches the model`);
+  });
+
   test("date scope is preserved across follow-ups", async () => {
     const res = await converse({
       ...base,

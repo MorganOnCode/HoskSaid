@@ -79,13 +79,11 @@ const TOOLS: Record<string, (a: Args, client: string) => Promise<unknown>> = {
   search_segments: async (a, client) => {
     const query = requireQuery(a);
     const videoId = a.video_id === undefined ? undefined : requireVideoId(a);
-    const videoIds = optionalVideoIds(a);
     const scope = dateScope(a);
     return searchSegments(query, {
       client,
       limit: clampInt(a.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
       videoId,
-      videoIds,
       from: scope.from,
       to: scope.to,
     });

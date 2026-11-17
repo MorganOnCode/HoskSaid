@@ -79,12 +79,11 @@ export async function converse(input: ConverseInput): Promise<ConverseResponse |
     const freshOk = (fresh[0]?.similarity ?? 0) >= QUALITY_THRESHOLD;
     const carried = carriedIds.length ? await getSegmentsInScope(carriedIds, input.scope) : [];
 
-    const seen = new Set<string>();
+    const seen = new Set(carried.map((c) => c.id));
     const freshUse = (freshOk ? fresh : [])
       .filter((c) => !seen.has(c.id) && seen.add(c.id))
       .slice(0, Math.max(0, CONTEXT_SEGMENTS - carried.length));
-    const carriedUse = carried.filter((c) => !seen.has(c.id) && seen.add(c.id));
-    const chunks = [...freshUse, ...carriedUse].slice(0, CONTEXT_SEGMENTS);
+    const chunks = [...freshUse, ...carried].slice(0, CONTEXT_SEGMENTS);
     if (!chunks.length) return { matched: 0, suggestions: BROADEN_SUGGESTIONS, insufficient_evidence: true };
 
     const context = chunks.map((c, i) => toContextItem(c, i + 1));
@@ -105,7 +104,7 @@ export async function converse(input: ConverseInput): Promise<ConverseResponse |
         mode: "semantic",
         funded_by: "site",
         fresh_segments: freshUse.length,
-        carried_segments: carriedUse.length,
+        carried_segments: chunks.length - freshUse.length,
         carried_dropped: carriedIds.length - carried.length,
       },
       conversation: { history_turns_used: input.history.length },

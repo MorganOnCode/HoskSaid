@@ -114,7 +114,7 @@ describe("retrieval-only access", { skip: SKIP_DB }, () => {
   });
 
   test("MCP search_segments returns bounded passages with citations for a client-owned model, never an answer", async () => {
-    const r = await tool("search_segments", { query: "hydra heads", limit: 3, video_ids: ["KWvidEmbed01"] });
+    const r = await tool("search_segments", { query: "hydra heads", limit: 3, video_id: "KWvidEmbed01" });
     assert.equal(r.isError, false);
     assert.equal(r.data.length, 3);
     for (const s of r.data) {
