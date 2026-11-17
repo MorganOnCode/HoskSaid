@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hosk_test
+          POSTGRES_PASSWORD: testonly
+          POSTGRES_DB: hosksaid_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hosk_test -d hosksaid_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Isolated, throwaway database; tests refuse non-loopback or non-test URLs.
+      TEST_DATABASE_URL: postgres://hosk_test:testonly@127.0.0.1:5432/hosksaid_test
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx tsc --noEmit
+      - run: npx eslint .
+      - run: npm test
+      - run: npx next build

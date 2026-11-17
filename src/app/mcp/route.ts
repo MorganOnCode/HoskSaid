@@ -4,8 +4,13 @@ import { askArchive } from "@/lib/retrieval";
 import {
   searchSegments, getVideoApi, getTranscriptApi, getSegmentApi, listVideosApi, listTopicsApi,
 } from "@/lib/api";
-import { rateLimited } from "@/lib/ratelimit";
-import type { AskFilters } from "@/lib/ask-types";
+import { clientIdentity, rateLimited } from "@/lib/ratelimit";
+import { readJsonBody } from "@/lib/body";
+import {
+  DEFAULT_SEARCH_LIMIT, MAX_MCP_BATCH, MAX_MCP_BODY_BYTES, MAX_SEARCH_LIMIT, clampInt, isYoutubeId,
+  validateFilters, validateQuery,
+} from "@/lib/limits";
+import { describeError } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,32 +20,89 @@ const PROTOCOL_VERSION = "2025-06-18";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Args = Record<string, any>;
 
-/** Tool implementations → plain JSON (wrapped as MCP text content by the caller). */
-const TOOLS: Record<string, (a: Args) => Promise<unknown>> = {
-  search_archive: (a) =>
-    askArchive(String(a.query || ""), a.filters as AskFilters | undefined, {
+/** A tool's argument problem, reported to the client as an isError tool result. */
+class ToolInputError extends Error {}
+
+function requireQuery(a: Args): string {
+  const q = validateQuery(a.query);
+  if (!q.ok) throw new ToolInputError(q.detail ?? q.error);
+  return q.value;
+}
+
+function requireVideoId(a: Args): string {
+  if (!isYoutubeId(a.video_id)) throw new ToolInputError("video_id must be a YouTube video id");
+  return a.video_id;
+}
+
+/**
+ * Tool implementations → plain JSON (wrapped as MCP text content by the caller).
+ * `client` is the caller's limiter identity, charged for paid tools.
+ */
+const TOOLS: Record<string, (a: Args, client: string) => Promise<unknown>> = {
+  search_archive: async (a, client) => {
+    const query = requireQuery(a);
+    const f = validateFilters(a.filters);
+    if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
+    if (a.with_citations !== undefined && typeof a.with_citations !== "boolean") {
+      throw new ToolInputError("with_citations must be a boolean");
+    }
+    const result = await askArchive(query, f.value.scope, f.value.filters, {
+      client,
       withCitations: a.with_citations ?? true,
       persist: true,
-    }),
-  search_segments: (a) =>
-    searchSegments(String(a.query || ""), {
-      limit: a.limit, videoId: a.video_id, dateFrom: a.date_from, dateTo: a.date_to,
-    }),
-  get_video: async (a) => (await getVideoApi(String(a.video_id || ""))) ?? { error: "not_found" },
-  get_transcript: async (a) =>
-    (await getTranscriptApi(String(a.video_id || ""), (a.format as "segments" | "text" | "vtt") || "segments")) ?? { error: "not_found" },
+    });
+    if ("cached" in result) {
+      const { cached: _cached, ...rest } = result;
+      return rest;
+    }
+    return result;
+  },
+  search_segments: async (a, client) => {
+    const query = requireQuery(a);
+    const videoId = a.video_id === undefined ? undefined : requireVideoId(a);
+    const f = validateFilters({
+      ...(a.date_from ? { date_from: a.date_from } : {}),
+      ...(a.date_to ? { date_to: a.date_to } : {}),
+    });
+    if (!f.ok) throw new ToolInputError(f.detail ?? f.error);
+    return searchSegments(query, {
+      client,
+      limit: clampInt(a.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
+      videoId,
+      from: f.value.scope.from,
+      to: f.value.scope.to,
+    });
+  },
+  get_video: async (a) => (await getVideoApi(requireVideoId(a))) ?? { error: "not_found" },
+  get_transcript: async (a) => {
+    const format = a.format ?? "segments";
+    if (!["segments", "text", "vtt"].includes(format)) throw new ToolInputError("format must be segments, text or vtt");
+    return (await getTranscriptApi(requireVideoId(a), format)) ?? { error: "not_found" };
+  },
   get_segment: async (a) => (await getSegmentApi(String(a.segment_id || ""))) ?? { error: "not_found" },
   list_videos: (a) =>
-    listVideosApi({ type: a.type, topic: a.topic, sort: a.sort, cursor: a.cursor, limit: a.limit }),
+    listVideosApi({
+      type: typeof a.type === "string" ? a.type.slice(0, 40) : undefined,
+      topic: typeof a.topic === "string" ? a.topic.slice(0, 60) : undefined,
+      sort: typeof a.sort === "string" ? a.sort : undefined,
+      cursor: typeof a.cursor === "string" ? a.cursor.slice(0, 32) : undefined,
+      limit: a.limit,
+    }),
   list_topics: () => listTopicsApi(),
 };
 
 interface RpcReq { jsonrpc?: string; id?: string | number | null; method?: string; params?: Args }
 
-async function dispatch(msg: RpcReq): Promise<object | null> {
+function isRpcObject(m: unknown): m is RpcReq {
+  return !!m && typeof m === "object" && !Array.isArray(m);
+}
+
+async function dispatch(msg: unknown, client: string): Promise<object | null> {
+  if (!isRpcObject(msg)) return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
   const id = msg.id ?? null;
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
   const fail = (code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
+  const toolError = (text: string) => reply({ content: [{ type: "text", text }], isError: true });
 
   // Notifications (no id) get no response.
   const isNotification = msg.id === undefined || msg.id === null;
@@ -60,45 +122,74 @@ async function dispatch(msg: RpcReq): Promise<object | null> {
     case "tools/list":
       return reply({ tools: manifest.tools });
     case "tools/call": {
-      const name = msg.params?.name as string;
-      const impl = TOOLS[name];
-      if (!impl) return reply({ content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true });
+      const name = msg.params?.name;
+      const impl = typeof name === "string" && Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined;
+      if (!impl) return toolError(`Unknown tool: ${String(name).slice(0, 60)}`);
+      const args = msg.params?.arguments;
+      if (args !== undefined && (typeof args !== "object" || args === null || Array.isArray(args))) {
+        return toolError("arguments must be an object");
+      }
       try {
-        const data = await impl((msg.params?.arguments || {}) as Args);
+        const data = await impl((args || {}) as Args, client);
         return reply({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }], isError: false });
       } catch (e) {
-        console.error(`[mcp tools/call ${name}]`, e);
-        return reply({ content: [{ type: "text", text: "Tool execution failed." }], isError: true });
+        if (e instanceof ToolInputError) return toolError(`Invalid arguments: ${e.message}`);
+        const d = describeError(e);
+        if (d.status === 500) {
+          console.error(`[mcp tools/call ${name}]`, e instanceof Error ? `${e.name}: ${e.message}` : "unknown error");
+          return toolError("Tool execution failed.");
+        }
+        return toolError(JSON.stringify(d.body));
       }
     }
     default:
       if (isNotification) return null;
-      return fail(-32601, `Method not found: ${msg.method}`);
+      return fail(-32601, `Method not found: ${String(msg.method).slice(0, 60)}`);
   }
 }
 
-/** MCP Streamable HTTP endpoint (JSON request/response mode). */
+/**
+ * MCP Streamable HTTP endpoint (JSON request/response mode).
+ * Bounds: body <= 64 KiB, at most 8 JSON-RPC messages per POST, each message
+ * charged to the caller's rate limit, and messages handled one at a time so a
+ * batch never fans out into parallel paid calls. Paid tools are additionally
+ * bound by the caller's per-client daily allowance, the site's daily caps and
+ * the concurrency gate.
+ */
 export async function POST(request: NextRequest) {
-  const limited = rateLimited(request);
-  if (limited) return limited;
+  const parsed = await readJsonBody(request, MAX_MCP_BODY_BYTES);
+  if (!parsed.ok) {
+    const code = parsed.error === "invalid_body" ? -32700 : -32600;
+    const message = parsed.error === "invalid_body" ? "Parse error" : parsed.error === "body_too_large" ? "Request too large" : "Unsupported media type";
+    return Response.json({ jsonrpc: "2.0", id: null, error: { code, message } }, { status: parsed.status });
+  }
+  const body = parsed.value;
+  const batch = Array.isArray(body);
+  const messages: unknown[] = batch ? body : [body];
 
-  let body: RpcReq | RpcReq[];
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
+  if (messages.length === 0 || messages.length > MAX_MCP_BATCH) {
+    return Response.json(
+      { jsonrpc: "2.0", id: null, error: { code: -32600, message: `Invalid Request: a batch must contain 1-${MAX_MCP_BATCH} messages` } },
+      { status: 400 }
+    );
   }
 
-  const batch = Array.isArray(body);
-  const messages: RpcReq[] = Array.isArray(body) ? body : [body];
-  const responses = (await Promise.all(messages.map(dispatch))).filter(Boolean);
+  const limited = rateLimited(request, messages.length);
+  if (limited) return limited;
+
+  const client = clientIdentity(request);
+  const responses: object[] = [];
+  for (const m of messages) {
+    const r = await dispatch(m, client);
+    if (r) responses.push(r);
+  }
 
   if (responses.length === 0) {
     // Only notifications — acknowledge with 202, no body.
     return new Response(null, { status: 202 });
   }
   return Response.json(batch ? responses : responses[0], {
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
 }
 

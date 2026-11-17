@@ -7,7 +7,7 @@ export const metadata = { title: "Agents — MCP & API" };
 const BASE = process.env.PUBLIC_BASE_URL || "https://thehosksaid.com";
 
 const REST = [
-  { m: "POST", p: "/api/ask", d: "Synthesized, citation-backed answer." },
+  { m: "POST", p: "/api/ask", d: "Synthesized, citation-backed answer (query ≤ 1000 chars)." },
   { m: "GET", p: "/api/search?q=", d: "Raw semantic search over segments." },
   { m: "GET", p: "/api/videos", d: "Paginated catalogue (type, topic, sort, cursor)." },
   { m: "GET", p: "/api/videos/{id}", d: "One video: chapters, topics, counts." },
@@ -55,8 +55,8 @@ export default function AgentsPage() {
       </section>
 
       <section className="ag-sec">
-        <div className="sec-head"><h2>MCP <em>tools</em></h2><span className="ln" /><span className="more">{manifest.tools.length} READ-ONLY</span></div>
-        <p className="intro">All tools are read-only and return JSON. <code>search_archive</code> returns the same shape as <code>POST /api/ask</code> — an answer with <code>citations[]</code> and <code>sources[]</code>.</p>
+        <div className="sec-head"><h2>MCP <em>tools</em></h2><span className="ln" /><span className="more">{manifest.tools.length} TOOLS</span></div>
+        <p className="intro">All tools return JSON and never change the archive. <code>search_archive</code> returns the same shape as <code>POST /api/ask</code> — an answer with <code>citations[]</code> and <code>sources[]</code>. It runs a paid model call on the site&apos;s budget and stores the question and answer (see <a href="/privacy" style={{ textDecoration: "underline" }}>privacy</a>); <code>search_segments</code> spends one embedding call and stores nothing. Site-funded calls have a daily site-wide cap and a smaller daily allowance per client, so they can return a <code>site_budget_exhausted</code> or <code>client_quota_exhausted</code> error. A batch POST may hold at most 8 messages, and each one counts against your rate limit.</p>
         <div className="tool-grid">
           {manifest.tools.map((t) => {
             const args = Object.keys((t.inputSchema?.properties as object) || {});
@@ -93,7 +93,8 @@ export default function AgentsPage() {
           <div className="authcell">
             <div className="h">Anonymous <span className="tag">no key</span></div>
             <ul>
-              <li><span className="dot">◆</span><span>Read-only access to every tool &amp; endpoint.</span></li>
+              <li><span className="dot">◆</span><span>Every tool &amp; endpoint; nothing modifies the archive.</span></li>
+              <li><span className="dot">◆</span><span>Each MCP batch message counts as a request.</span></li>
               <li><span className="dot">◆</span><span><b>60 req/min</b> per IP (burst 120).</span></li>
               <li><span className="dot">◆</span><span>On throttle: <b>429</b> + <b>Retry-After</b>.</span></li>
             </ul>
@@ -104,6 +105,7 @@ export default function AgentsPage() {
               <li><span className="dot">◆</span><span>Send <b>Authorization: Bearer &lt;key&gt;</b>.</span></li>
               <li><span className="dot">◆</span><span><b>600 req/min</b>.</span></li>
               <li><span className="dot">◆</span><span>Contact the maintainer for a key.</span></li>
+              <li><span className="dot">◆</span><span>Unrecognized or empty bearer keys return <b>401</b>.</span></li>
             </ul>
           </div>
         </div>

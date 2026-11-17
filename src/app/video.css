@@ -15,7 +15,7 @@
 .vhead{margin-top:22px;}
 .vhead h1{font-family:var(--font-display);font-weight:420;letter-spacing:-0.02em;line-height:1.12;font-size:clamp(26px,3vw,38px);}
 .vmeta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:13px;font-family:var(--font-mono);font-size:11.5px;color:var(--ink-3);}
-.vmeta .seg{color:var(--accent);}
+.vmeta .seg{color:var(--accent-text);}
 .vmeta .sep{color:var(--ink-faint);}
 .vactions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px;}
 .vtags{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
@@ -38,7 +38,7 @@
 .vsum-item:last-child{border-bottom:none;}
 .vsum-item:hover{background:var(--surface-2);}
 .vsum-item.noseek{cursor:default;}
-.vsum-ts{font-family:var(--font-mono);font-size:11px;color:var(--accent);flex:none;padding-top:2px;}
+.vsum-ts{font-family:var(--font-mono);font-size:11px;color:var(--accent-text);flex:none;padding-top:2px;}
 .vsum-tx{font-size:13.5px;color:var(--ink-2);line-height:1.5;}
 .vsum-foot{padding:10px 18px;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint);border-top:1px solid var(--line);}
 
@@ -92,3 +92,11 @@
   .related .vid-go{display:none;}
   .chap-item{grid-template-columns:54px 1fr;}
 }
+
+/* video without embedded segments: Ask is unavailable, keyword search still works */
+.vask-off{margin-top:24px;background:var(--surface);border:1px dashed var(--line-2);border-radius:15px;padding:16px 18px;font-size:14px;line-height:1.6;color:var(--ink-2);}
+.vask-off b{color:var(--ink);font-weight:600;}
+.vask-off a{text-decoration:underline;}
+.vlayout > *{min-width:0;}
+/* small text links get a 24px-tall hit area (WCAG 2.5.8) */
+.crumb a,.tx-foot a{display:inline-flex;align-items:center;min-height:24px;}

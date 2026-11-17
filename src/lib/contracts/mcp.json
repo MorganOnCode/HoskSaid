@@ -12,7 +12,7 @@
     "required": false,
     "scheme": "bearer",
     "header": "Authorization",
-    "note": "Anonymous access is read-only and rate-limited (60 req/min/IP). Send 'Authorization: Bearer <key>' for 600 req/min."
+    "note": "Anonymous access is rate-limited (60 req/min/IP, each JSON-RPC message counts; at most 8 messages per POST). Tools never modify the archive; search_archive spends a site-funded model call under a daily cap and stores the question and answer. Send 'Authorization: Bearer <key>' with a maintainer-issued key for 600 req/min. Unrecognized or empty bearer keys return 401."
   },
   "tools": [
     {
@@ -22,7 +22,7 @@
         "type": "object",
         "required": ["query"],
         "properties": {
-          "query": { "type": "string", "description": "Natural-language question." },
+          "query": { "type": "string", "maxLength": 1000, "description": "Natural-language question (at most 1000 characters)." },
           "filters": {
             "type": "object",
             "properties": {
@@ -43,8 +43,8 @@
         "type": "object",
         "required": ["query"],
         "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer", "default": 10, "maximum": 50 },
+          "query": { "type": "string", "maxLength": 1000 },
+          "limit": { "type": "integer", "default": 10, "minimum": 1, "maximum": 50 },
           "video_id": { "type": "string" },
           "date_from": { "type": "string", "format": "date" },
           "date_to": { "type": "string", "format": "date" }

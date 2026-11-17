@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useRef, useState } from "react";
 import type { AskResponse, AskEmpty, AskFilters } from "@/lib/ask-types";
+import { describeAskFailure, type AskFailure } from "@/lib/ask-errors";
 
 type AskState = "idle" | "loading" | "answered" | "empty" | "error";
 
@@ -11,6 +12,7 @@ interface AskContextValue {
   response: AskResponse | null;
   empty: AskEmpty | null;
   errorReqId: string | null;
+  failure: AskFailure | null;
   activeCite: number | null;
   setActiveCite: (n: number | null) => void;
   submit: (q: string, filters?: AskFilters) => void;
@@ -41,6 +43,7 @@ export function AskProvider({
   const [response, setResponse] = useState<AskResponse | null>(null);
   const [empty, setEmpty] = useState<AskEmpty | null>(null);
   const [errorReqId, setErrorReqId] = useState<string | null>(null);
+  const [failure, setFailure] = useState<AskFailure | null>(null);
   const [activeCite, setActiveCite] = useState<number | null>(null);
   const lastRef = useRef<{ q: string; filters?: AskFilters }>({ q: "" });
 
@@ -54,6 +57,7 @@ export function AskProvider({
       setResponse(null);
       setEmpty(null);
       setErrorReqId(null);
+      setFailure(null);
       setState("loading");
 
       // Bring the answer into view.
@@ -83,12 +87,14 @@ export function AskProvider({
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           setErrorReqId(body?.request_id ?? res.headers.get("x-request-id"));
+          setFailure(describeAskFailure(res.status, body));
           setState("error");
           return;
         }
         setResponse((await res.json()) as AskResponse);
         setState("answered");
       } catch {
+        setFailure(describeAskFailure(null, null));
         setState("error");
       }
     },
@@ -101,7 +107,7 @@ export function AskProvider({
 
   return (
     <AskContext.Provider
-      value={{ state, query, response, empty, errorReqId, activeCite, setActiveCite, submit: run, retry }}
+      value={{ state, query, response, empty, errorReqId, failure, activeCite, setActiveCite, submit: run, retry }}
     >
       {children}
     </AskContext.Provider>

@@ -8,7 +8,7 @@
 .sortsel{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:11px;color:var(--ink-3);}
 .sortsel select{font-family:var(--font-ui);font-size:13px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line-2);border-radius:9px;padding:7px 10px;cursor:pointer;outline:none;}
 .count-line{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);margin-bottom:18px;}
-.count-line b{color:var(--accent);font-weight:500;}
+.count-line b{color:var(--accent-text);font-weight:500;}
 
 /* ---------- LIBRARY ---------- */
 .page-head .row{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;}
@@ -106,3 +106,20 @@
   .tl-card{grid-template-columns:64px 1fr;}
   .tl-card .go{display:none;}
 }
+
+/* keyword-search excerpt on library cards */
+.vcard .vsnip{font-size:12.5px;line-height:1.5;color:var(--ink-2);margin-top:10px;}
+.vcard .vsnip mark{background:color-mix(in oklab, var(--accent) 26%, transparent);color:var(--ink);border-radius:3px;padding:0 1px;}
+.sortsel select,.lib-search input{min-height:40px;}
+.lib-search input:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px;}
+.empty-card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:28px 26px;color:var(--ink-2);line-height:1.6;max-width:70ch;}
+.empty-card h2{font-family:var(--font-display);font-weight:420;font-size:24px;color:var(--ink);margin-bottom:8px;}
+
+/* long-form text pages (privacy, blog posts) */
+.prose{max-width:70ch;color:var(--ink-2);font-size:16px;line-height:1.7;}
+.prose h2{font-family:var(--font-display);font-weight:420;font-size:25px;color:var(--ink);margin:34px 0 10px;letter-spacing:-0.01em;}
+.prose h2:first-child{margin-top:0;}
+.prose p{margin:0 0 14px;}
+.prose a{text-decoration:underline;}
+.prose code{font-family:var(--font-mono);font-size:.88em;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;}
+.lib-grid > *, .topic-grid > *, .feature > *, .tllayout > *{min-width:0;}

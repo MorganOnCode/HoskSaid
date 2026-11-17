@@ -82,18 +82,24 @@ export function VideoDetailClient({
   startSeconds = 0,
   segments,
   paragraphs,
+  transcriptCleaned = false,
+  initialQuery = "",
   children,
 }: {
   youtubeId: string;
   startSeconds?: number;
   segments?: TimedSeg[];
   paragraphs?: string[];
+  /** Only label the transcript "AI-cleaned" when it really was. */
+  transcriptCleaned?: boolean;
+  /** Prefill the transcript search (arrives from a Library keyword match). */
+  initialQuery?: string;
   children?: React.ReactNode;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
   const [currentTime, setCurrentTime] = useState(startSeconds);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery);
   const listRef = useRef<HTMLDivElement>(null);
   const segRefs = useRef<(HTMLElement | null)[]>([]);
 
@@ -174,11 +180,12 @@ export function VideoDetailClient({
         <aside className="tx">
           <div className="tx-hd">
             <span className="t">Transcript</span>
-            <span className="m">{timed ? `${items.length} lines` : items.length ? "AI-cleaned" : "processing"}</span>
+            <span className="m">{timed ? `${items.length} lines` : items.length ? (transcriptCleaned ? "AI-cleaned · untimed" : "Machine transcript · untimed") : "processing"}</span>
           </div>
           <div className="tx-search">
             <span className="ic">⌕</span>
             <input
+              type="search"
               placeholder="Search this transcript…"
               value={q}
               onChange={(e) => setQ(e.target.value)}

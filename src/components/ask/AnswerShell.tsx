@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useAsk } from "./AskProvider";
 import { AnswerBody } from "./AnswerBody";
 import { SourceCard } from "./SourceCard";
+import Link from "next/link";
 import { ASK_STAGES } from "@/lib/ask-types";
+import { describeAskFailure } from "@/lib/ask-errors";
 
 function LoadingCard() {
   const [i, setI] = useState(0);
@@ -39,7 +41,8 @@ function LoadingCard() {
 
 /** Renders whichever Ask state is active. Hidden entirely when idle. */
 export function AnswerShell() {
-  const { state, query, response, empty, errorReqId, activeCite, setActiveCite, submit, retry } = useAsk();
+  const { state, query, response, empty, errorReqId, failure, activeCite, setActiveCite, submit, retry } = useAsk();
+  const fail = failure ?? describeAskFailure(null, null);
   const router = useRouter();
 
   return (
@@ -118,12 +121,16 @@ export function AnswerShell() {
         <div className="answer-state on">
           <div className="state-card error">
             <span className="glyph">!</span>
-            <h3>The index didn&apos;t respond</h3>
-            <p>We couldn&apos;t reach the search service to synthesize an answer. Your question is fine — this one&apos;s on us. Give it another go in a moment.</p>
+            <h3>{fail.title}</h3>
+            <p>{fail.message}</p>
             <div className="row">
-              <button className="btn accent" onClick={retry}>↻ Retry</button>
+              {fail.retryable ? (
+                <button className="btn accent" onClick={retry}>↻ Retry</button>
+              ) : (
+                <Link className="btn" href="/library">Search the Library</Link>
+              )}
             </div>
-            <span className="mono">ERR · SYNTHESIS{errorReqId ? ` · REQ ${errorReqId}` : ""}</span>
+            <span className="mono">ERR · {fail.code}{errorReqId ? ` · REQ ${errorReqId}` : ""}</span>
           </div>
         </div>
       )}

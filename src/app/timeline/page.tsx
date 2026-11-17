@@ -1,10 +1,11 @@
 import Link from "next/link";
 import "../browse.css";
 import { getTimelineVideos, type VideoCard } from "@/lib/browse";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, formatCount } from "@/lib/format";
+import { decodeEntities } from "@/lib/text";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Timeline" };
+export const metadata = { title: "Timeline", alternates: { canonical: "/timeline" } };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -14,8 +15,9 @@ function monthKey(d: string): string {
 }
 
 export default async function TimelinePage() {
-  const videos = await getTimelineVideos(400).catch(() => []);
+  const { videos, total } = await getTimelineVideos().catch(() => ({ videos: [] as VideoCard[], total: 0 }));
   const dated = videos.filter((v) => v.published_at);
+  const undated = videos.length - dated.length;
 
   // Group by month, newest first.
   const groups: { key: string; label: string; year: number; items: VideoCard[] }[] = [];
@@ -32,24 +34,38 @@ export default async function TimelinePage() {
     g.items.push(v);
   }
 
+  // Year index for the rail (the month list is too long to stay sticky).
+  const years: { year: number; firstKey: string; count: number }[] = [];
+  for (const g of groups) {
+    const last = years[years.length - 1];
+    if (last && last.year === g.year) last.count += g.items.length;
+    else years.push({ year: g.year, firstKey: g.key, count: g.items.length });
+  }
+
   return (
     <div className="wrap">
       <div className="page-head">
-        <span className="eyebrow"><span className="dot" />EVERY UPLOAD · IN ORDER</span>
+        <span className="eyebrow"><span className="dot" />{formatCount(dated.length)} DATED VIDEOS · NEWEST FIRST</span>
         <h1>The <em>timeline</em></h1>
         <p className="sub">The whole archive in sequence — talks, AMAs and whiteboards as they aired.</p>
+        {undated > 0 || total > videos.length ? (
+          <p className="count-line" style={{ marginTop: 14 }}>
+            {undated > 0 ? `${undated} videos without a publish date are not shown. ` : ""}
+            {total > videos.length ? `Showing the newest ${videos.length} of ${total}.` : ""}
+          </p>
+        ) : null}
       </div>
 
       <div className="tllayout">
-        <div className="rail">
-          <div className="rl-h">Jump to month</div>
-          {groups.map((g) => (
-            <a className="rl-item" key={g.key} href={`#m-${g.key}`}>
-              <span className="ml">{g.label} {g.year}</span>
-              <span className="ct">{g.items.length}</span>
+        <nav className="rail" aria-label="Jump to year">
+          <div className="rl-h">Jump to year</div>
+          {years.map((y) => (
+            <a className="rl-item" key={y.year} href={`#m-${y.firstKey}`}>
+              <span className="ml">{y.year}</span>
+              <span className="ct">{y.count}</span>
             </a>
           ))}
-        </div>
+        </nav>
 
         <div className="tl">
           {groups.map((g) => (
@@ -66,7 +82,7 @@ export default async function TimelinePage() {
                     <Link className="tl-card" href={`/video/${v.youtube_id}`}>
                       <div className="date"><b>{String(dt.getUTCDate()).padStart(2, "0")}</b>{MONTHS[dt.getUTCMonth()]}</div>
                       <div className="mid">
-                        <div className="tt">{v.title}</div>
+                        <div className="tt">{decodeEntities(v.title)}</div>
                         <div className="mt">
                           {v.video_type ? <span className="type">{v.video_type}</span> : null}
                           <span className="seg">{v.segment_count} segments</span>

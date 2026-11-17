@@ -32,6 +32,18 @@ export interface AskResponse {
   sources: AskSource[];
 }
 
+/** A numbered transcript segment supplied to the model as grounding context. */
+export interface AskContextItem {
+  n: number;
+  segment_id: string;
+  video_id: string; // youtube_id
+  title: string;
+  date: string | null; // YYYY-MM-DD
+  start_seconds: number | null;
+  similarity: number; // 0-100
+  text: string;
+}
+
 /** 422 — nothing cleared the relevance threshold. */
 export interface AskEmpty {
   matched: 0;
