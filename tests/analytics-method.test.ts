@@ -1,7 +1,5 @@
 /** /analytics ranking method and URL contract: pure functions, no database. */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, test } from "node:test";
 import {
   PARAMS, captionFlags, computeRankings, distinctiveComparison, extractItems, foldWord, isContentWord, isFormula, tokenize,
@@ -203,14 +201,8 @@ describe("query contract", () => {
 });
 
 describe("subjects", () => {
-  test("every subject is a seeded topic with a bounded public query", () => {
-    const seed = readFileSync(path.join(process.cwd(), "docker", "migrations", "001-handoff-schema.sql"), "utf8");
-    const slugs = new Set([...seed.matchAll(/\('[^']+',\s+'([a-z0-9-]+)'/g)].map((m) => m[1]));
-    assert.equal(SUBJECTS.length, slugs.size);
-    for (const s of SUBJECTS) {
-      assert.ok(slugs.has(s.slug), s.slug);
-      assert.ok(s.query.length <= MAX_TERM_CHARS);
-    }
+  test("every subject has a unique slug and a bounded public query", () => {
+    for (const s of SUBJECTS) assert.ok(s.query.length <= MAX_TERM_CHARS, s.slug);
     assert.equal(new Set(SUBJECTS.map((s) => s.slug)).size, SUBJECTS.length);
     assert.equal(subjectForQuery("  MIDNIGHT ")?.slug, "midnight");
   });

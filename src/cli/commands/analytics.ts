@@ -3,6 +3,7 @@ import { CliError, emit, emitHelp, RUN, type Command } from "../runtime";
 import { sql } from "../../lib/db";
 import { METHOD } from "../../lib/analytics/method";
 import { refreshAnalytics, RefreshError } from "../../lib/analytics/refresh";
+import { getSnapshotStatus } from "../../lib/analytics/data";
 
 const USAGE = `${RUN} analytics [status]                          show the published /analytics rankings snapshot
 ${RUN} analytics refresh [--dry-run] [--max-rss-mb <n>] [--max-phrase-candidates <n>]
@@ -30,25 +31,18 @@ async function status(): Promise<number> {
     emitHelp([`Run \`${RUN} migrate apply\`, then \`${RUN} analytics refresh\``]);
     return 0;
   }
-  const [snap] = await sql<{ id: number; method: string; generated_at: Date; videos_computed: number; words_computed: string; years: { year: number }[]; rows: number }[]>`
-    SELECT s.id::int AS id, s.method, s.generated_at, s.videos_computed, s.words_computed, s.years,
-           (SELECT count(*)::int FROM analytics_rankings r WHERE r.snapshot_id = s.id) AS rows
-    FROM analytics_snapshots s ORDER BY s.generated_at DESC, s.id DESC LIMIT 1
-  `;
-  if (!snap) {
+  const st = await getSnapshotStatus();
+  if (st.state === "missing") {
     emit({ analytics: "no rankings snapshot published; /analytics says rankings are not computed (queries still work)" });
     emitHelp([`Run \`${RUN} analytics refresh --dry-run\` to measure, then \`${RUN} analytics refresh\``]);
     return 0;
   }
-  const [cur] = await sql<{ n: number; updated: Date | null }[]>`
-    SELECT count(*)::int AS n, max(t.updated_at) AS updated
-    FROM videos v JOIN transcripts t ON t.video_id = v.id
-    WHERE v.status = 'completed' AND v.published_at IS NOT NULL AND octet_length(t.cleaned_text) > 0
-  `;
+  const snap = st.snapshot;
+  const [{ rows }] = await sql<{ rows: number }[]>`SELECT count(*)::int AS rows FROM analytics_rankings WHERE snapshot_id = ${snap.id}`;
   const stale =
-    snap.method !== METHOD ? `method ${snap.method} != current ${METHOD}`
-    : cur.n !== snap.videos_computed ? `archive now has ${cur.n} rankable transcripts (snapshot counted ${snap.videos_computed})`
-    : cur.updated && cur.updated > snap.generated_at ? "transcripts updated since the snapshot"
+    st.state === "outdated_method" ? `method ${snap.method} != current ${METHOD}`
+    : st.state === "stale" && st.reason === "video_count" ? `archive now has ${st.current_videos} rankable transcripts (snapshot counted ${snap.videos_computed})`
+    : st.state === "stale" ? "transcripts updated since the snapshot"
     : "no";
   const yrs = snap.years.map((y) => y.year);
   emit({
@@ -59,7 +53,7 @@ async function status(): Promise<number> {
       videos: snap.videos_computed,
       words: Number(snap.words_computed),
       years: yrs.length ? `${yrs[0]}-${yrs[yrs.length - 1]} (${yrs.length})` : "none",
-      rows: snap.rows,
+      rows,
       stale,
     },
   });

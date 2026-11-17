@@ -7,6 +7,7 @@ import { after, before, describe, test } from "node:test";
 import { NextRequest } from "next/server";
 import { SKIP_DB, createTestDb, seedVideo, type FixtureVideo, type TestDb } from "./helpers/db";
 import { startFakeOpenAI, type FakeOpenAI } from "./helpers/fake-openai";
+import { SUBJECTS } from "../src/lib/analytics/subjects";
 
 /** Only stopwords/fillers: never ranked, so the fixture controls every content word. */
 const FILLER = "so we are going to think about it and you know that is really what we do".split(" ");
@@ -274,6 +275,24 @@ describe("analytics", { skip: SKIP_DB }, () => {
     assert.equal((await data.getSnapshotStatus()).state, "current");
   });
 
+  test("a refresh published while the status is memoised serves the new snapshot, not empty lists", async () => {
+    process.env.PUBLIC_DATA_CACHE_SECONDS = "120";
+    cache.clearPublicCache();
+    try {
+      const archive = await data.getArchiveYears();
+      const first = await views.getRankingsPanel(archive, { from: 2025, to: 2025 });
+      assert.equal(first.snapshot.state, "current");
+      const r = await refresh.refreshAnalytics(db.sql, { maxRssMb: 2048 });
+      const later = await views.getRankingsPanel(archive, { from: 2020, to: 2025 });
+      assert.ok(later.phrases.ok && later.keywords.ok && later.formulas.ok, "lists come from the published snapshot");
+      const status = await data.getSnapshotStatus();
+      assert.equal("snapshot" in status && status.snapshot.id, r.snapshot_id);
+    } finally {
+      process.env.PUBLIC_DATA_CACHE_SECONDS = "0";
+      cache.clearPublicCache();
+    }
+  });
+
   test("the API refuses invalid or oversized input with 400", async () => {
     const status = async (path: string) => (await (path.startsWith("/api/analytics/sources") ? srcRoute : path.startsWith("/api/analytics/rankings") ? rankRoute : covRoute).GET(get(path))).status;
     assert.equal(await status("/api/analytics?q=a1&q=b1&q=c1&q=d1"), 400);
@@ -378,6 +397,20 @@ describe("analytics", { skip: SKIP_DB }, () => {
     assert.equal((await db.sql`SELECT id FROM analytics_snapshots`).length, snapsBefore);
     assert.equal(await run(["analytics"]), 0);
     assert.match(out.join(""), /method: rank-v1/);
+    assert.match(out.join(""), /stale: no/);
+    // A transcript updated after the refresh read it (but before it published) is stale, as on the page.
+    await db.sql`UPDATE analytics_snapshots SET source_updated_at = source_updated_at - interval '1 hour'`;
+    try {
+      assert.equal(await run(["analytics"]), 0);
+      assert.match(out.join(""), /stale: transcripts updated since the snapshot/);
+    } finally {
+      await db.sql`UPDATE analytics_snapshots SET source_updated_at = source_updated_at + interval '1 hour'`;
+    }
+  });
+
+  test("every subject is a seeded topic", async () => {
+    const slugs = (await db.sql<{ slug: string }[]>`SELECT slug FROM topics`).map((r) => r.slug).sort();
+    assert.deepEqual(SUBJECTS.map((s) => s.slug).sort(), slugs);
   });
 
   test("subject aliases count the union of videos, once each", async () => {

@@ -13,7 +13,7 @@
  */
 import type postgres from "postgres";
 import { sql } from "../db";
-import { cachedPublic, publicDataTtlMs } from "../cache";
+import { cachedPublic, createPublicCache, forgetPublic, publicDataTtlMs } from "../cache";
 import { clampInt } from "../limits";
 import { markTerms, snippetTerms } from "../browse";
 import { METHOD, STOPWORDS, type RankingList, type YearCount } from "./method";
@@ -36,6 +36,7 @@ export function statementTimeoutMs(): number {
 
 const LIVE_TTL = () => publicDataTtlMs(600_000);
 const SNAPSHOT_TTL = () => publicDataTtlMs(120_000);
+const queryCache = createPublicCache(200);
 
 /** Run `fn` in a read-only transaction whose statements are bounded by the analytics timeout. */
 export async function withAnalyticsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -175,7 +176,7 @@ const EMPTY_COVERAGE = { matched: 0, of: 0, title_only: 0, first: null, latest: 
 export async function getCoverage(terms: string[], from: number, to: number): Promise<TermCoverage[]> {
   return Promise.all(
     terms.map((term) =>
-      cachedPublic(`an:cov:${from}:${to}:${key(term)}`, LIVE_TTL(), () =>
+      queryCache.cached(`an:cov:${from}:${to}:${key(term)}`, LIVE_TTL(), () =>
         withAnalyticsTx(async (tx) => {
           const [status] = await termStatuses(tx, [term]);
           if (status !== "ok") return { q: term, status, ...EMPTY_COVERAGE };
@@ -267,7 +268,7 @@ function literalFor(matched: string | null): string | null {
 export async function getSources(term: string, from: number, to: number, year: number | null, page: number): Promise<SourcesPage> {
   const lo = year ?? from;
   const hi = year ?? to;
-  return cachedPublic(`an:src:${from}:${to}:${year ?? "all"}:${page}:${key(term)}`, LIVE_TTL(), () =>
+  return queryCache.cached(`an:src:${from}:${to}:${year ?? "all"}:${page}:${key(term)}`, LIVE_TTL(), () =>
     withAnalyticsTx(async (tx) => {
       const [status] = await termStatuses(tx, [term]);
       const base = { q: term, status, year, page, total: 0, pages: 0, items: [] as SourceItem[] };
@@ -467,18 +468,29 @@ export function snapshotRange(years: YearCount[], from: number, to: number): { f
   return { from: inside[0].year, to: inside[inside.length - 1].year, videos: inside.reduce((s, y) => s + y.videos, 0) };
 }
 
-export async function getRankingLists(snapshotId: number, from: number, to: number): Promise<RankingLists> {
-  return cachedPublic(`an:rank:${snapshotId}:${from}:${to}`, SNAPSHOT_TTL(), () =>
-    withAnalyticsTx(async (tx) => {
-      const rows = await tx<(RankingItem & { list: RankingList })[]>`
-        SELECT list, rank, item, videos, of_videos, cmp_videos, cmp_of, lift, edge_share
-        FROM analytics_rankings
-        WHERE snapshot_id = ${snapshotId} AND year_from = ${from} AND year_to = ${to}
-        ORDER BY list, rank
-      `;
-      const out: RankingLists = { phrases: [], keywords: [], distinctive: [], formulas: [] };
-      for (const { list, ...r } of rows) out[list].push(r);
-      return out;
-    })
-  );
+class SnapshotGoneError extends Error {}
+
+/** The snapshot's lists for one keyed range, or null when that snapshot has since been replaced. */
+export async function getRankingLists(snapshotId: number, from: number, to: number): Promise<RankingLists | null> {
+  try {
+    return await cachedPublic(`an:rank:${snapshotId}:${from}:${to}`, SNAPSHOT_TTL(), () =>
+      withAnalyticsTx(async (tx) => {
+        const [exists] = await tx`SELECT 1 FROM analytics_snapshots WHERE id = ${snapshotId}`;
+        if (!exists) throw new SnapshotGoneError();
+        const rows = await tx<(RankingItem & { list: RankingList })[]>`
+          SELECT list, rank, item, videos, of_videos, cmp_videos, cmp_of, lift, edge_share
+          FROM analytics_rankings
+          WHERE snapshot_id = ${snapshotId} AND year_from = ${from} AND year_to = ${to}
+          ORDER BY list, rank
+        `;
+        const out: RankingLists = { phrases: [], keywords: [], distinctive: [], formulas: [] };
+        for (const { list, ...r } of rows) out[list].push(r);
+        return out;
+      })
+    );
+  } catch (e) {
+    if (!(e instanceof SnapshotGoneError)) throw e;
+    forgetPublic("an:snapshot");
+    return null;
+  }
 }

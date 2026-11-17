@@ -140,6 +140,6 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 ## Caching
 
 - Pages render dynamically so the CSP nonce can be applied.
-- Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
+- Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. Analytics results for visitor queries (coverage and sources) use their own 200-entry memo, so they never push these entries out. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
 - Questions, answers, keys and operator data are never put in the public memo. The separate 5-minute answer cache is keyed by the normalised question text, filters and citation flag, so it only returns an answer to someone who sent that same question.
 - Within one request, the video page reads the video once (React `cache()`), shared by metadata and the page.

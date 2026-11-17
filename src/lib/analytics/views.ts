@@ -123,6 +123,7 @@ export async function getRankingsPanel(archive: ArchiveYears, range: Range): Pro
   }
 
   const lists = await getRankingLists(snap.id, sr.from, sr.to);
+  if (!lists) return getRankingsPanel(archive, range);
   const wrap = (items: RankingItem[], none: string): ListAvailability =>
     items.length ? { ok: true, items: items.map((i) => ({ ...i, flags: captionFlags(i.item) })) } : unavailable("none_met_support", none);
   const support = `No item appears in at least ${PARAMS.minVideos} of these ${sr.videos} transcripts.`;
