@@ -1,7 +1,7 @@
 /** Public browse-data memo (audit F7): dedupe, bounded TTL, failure handling, key isolation. */
 import assert from "node:assert/strict";
 import { beforeEach, mock, test } from "node:test";
-import { cachedPublic, clearPublicCache, publicDataTtlMs } from "../src/lib/cache";
+import { cachedPublic, clearPublicCache, createPublicCache, publicDataTtlMs } from "../src/lib/cache";
 
 beforeEach(() => {
   mock.restoreAll();
@@ -62,4 +62,18 @@ test("PUBLIC_DATA_CACHE_SECONDS overrides the default, invalid values fall back"
   assert.equal(publicDataTtlMs(120_000), 0);
   process.env.PUBLIC_DATA_CACHE_SECONDS = "abc";
   assert.equal(publicDataTtlMs(120_000), 120_000);
+});
+
+test("a separate bounded store never evicts the shared store's keys", async () => {
+  let calls = 0;
+  await cachedPublic("an:subjects", 60_000, async () => ++calls);
+  const visitor = createPublicCache(5);
+  for (let i = 0; i < 1000; i++) await visitor.cached(`an:cov:${i}`, 60_000, async () => i);
+  assert.equal(await cachedPublic("an:subjects", 60_000, async () => ++calls), 1);
+  assert.equal(calls, 1);
+  let recomputed = 0;
+  await visitor.cached("an:cov:0", 60_000, async () => ++recomputed);
+  assert.equal(recomputed, 1, "the visitor store stays bounded");
+  clearPublicCache();
+  assert.equal(await cachedPublic("an:subjects", 60_000, async () => ++calls), 2, "clearPublicCache clears every store");
 });

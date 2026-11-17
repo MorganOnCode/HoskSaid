@@ -12,6 +12,9 @@ const REST = [
   { m: "GET", p: "/api/videos", d: "Paginated catalogue (type, topic, sort, cursor)." },
   { m: "GET", p: "/api/videos/{id}", d: "One video: chapters, topics, counts." },
   { m: "GET", p: "/api/topics", d: "Clustered topics with counts." },
+  { m: "GET", p: "/api/analytics?q=", d: "Per-year video coverage of up to 3 keyword queries (free)." },
+  { m: "GET", p: "/api/analytics/sources?q=", d: "Matching videos with excerpts and timed links (free)." },
+  { m: "GET", p: "/api/analytics/rankings", d: "Subjects, phrases, keywords, intro/sign-off by year (free)." },
   { m: "GET", p: "/api/openapi.json", d: "The full REST spec." },
 ];
 

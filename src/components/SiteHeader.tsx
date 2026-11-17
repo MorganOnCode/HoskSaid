@@ -8,7 +8,7 @@ import { useState, useSyncExternalStore } from "react";
 const NAV = [
   { href: "/", label: "Ask" },
   { href: "/library", label: "Library" },
-  { href: "/topics", label: "Topics" },
+  { href: "/analytics", label: "Analytics" },
   { href: "/timeline", label: "Timeline" },
   { href: "/agents", label: "Agents" },
 ];

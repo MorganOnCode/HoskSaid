@@ -37,6 +37,7 @@ npx tsx src/cli/hosk.ts migrate apply             # apply in order
 | 006 | Backfill `search_tsv` | row locks only; writers to `transcripts` wait ~10 s, readers never |
 | 007 | GIN index on `search_tsv` (`CONCURRENTLY`) | none |
 | 008 | `client_usage_daily` (per-client daily allowance) | new table |
+| 010 | `analytics_snapshots`, `analytics_rankings` (/analytics phrase and keyword rankings) | new tables |
 
 **Apply migrations before the new image goes live.** Run `migrate apply` (with the new image, e.g. `docker compose -f docker-compose.prod.yml run --rm web npx tsx src/cli/hosk.ts migrate apply`) and confirm `migrate` shows nothing pending before switching traffic to it. This release's code needs 003, 004, 005 and 008: without them Ask, `/api/search` and the MCP search tools return 500 (missing function or tables), and Library keyword search with `q` returns 500 (missing `search_tsv`). Every migration is additive, so the previous image keeps working against the migrated schema. Later schema changes follow the same order: migrate first, then activate the image that needs them.
 
@@ -65,6 +66,25 @@ npx tsx src/scripts/generate-embeddings.ts --limit=50 --max-chunks=2000   # paid
 ```
 
 The backfill is resumable. Each video's chunks are written in one transaction, so a stopped run never leaves a half-embedded video. Topic, type and chapter enrichment (`assign-topics`, `classify-video-type`, `derive-chapters`) are separate paid passes.
+
+## Analytics (/analytics)
+
+`/analytics` replaces `/topics` (which now 308-redirects there). It has two kinds of data, and neither calls a model:
+
+- **Live, always available.** Subject counts, query comparisons and source lists read `videos`, `transcripts.search_tsv`/`cleaned_text` and `transcript_chunks` in a read-only transaction with a statement timeout (`ANALYTICS_STATEMENT_TIMEOUT_MS`, default 3000), memoised for 10 minutes. A video matches when its transcript or title matches the query; tags are not counted. They never read `answers` or other visitor data. `/api/analytics*` are rate-limited like the other REST endpoints (one unit per query), and the page charges one unit per view that runs a query.
+- **Rankings snapshot.** Repeated phrases, keywords and intro/sign-off patterns come from the latest snapshot written by an operator command. It is never refreshed automatically; nothing schedules it. Without migration 010, or before the first run, the page says rankings are not computed and everything else works. When the archive changes (new or edited transcripts) the page labels the snapshot out of date until the next run.
+
+```sh
+npx tsx src/cli/hosk.ts analytics                      # snapshot status (stale or not)
+npx tsx src/cli/hosk.ts analytics refresh --dry-run    # compute and measure, write nothing
+npx tsx src/cli/hosk.ts analytics refresh              # publish a new snapshot
+```
+
+The refresh reads transcripts in one repeatable-read, read-only transaction and writes only `analytics_snapshots`/`analytics_rankings`, replacing the previous snapshot in a single transaction (readers see the old or the new one, never a partial one). It is deterministic: the same transcripts give the same rankings. Memory is bounded by a fixed-size phrase sketch and an exact-candidate cap (`--max-phrase-candidates`, default 400000), and the run aborts without writing above `--max-rss-mb` (default 768).
+
+Measured on a production-shaped fixture (752 videos, 3.26M words, 10,280 chunks, the same per-year shape as the archive): about 14 s wall and 15 s CPU on one core, peak RSS about 400 MB (in-process; 490 MB for the whole `npx tsx` process), 0.35 s of database reads and 0.3 s to write 6,383 ranking rows. Live queries on the same fixture: a three-query comparison takes about 30 ms (p95 about 210 ms cold), a page of sources 70-150 ms, and the 41 subject counts about 180 ms (memoised for 10 minutes). Run the refresh after an ingest batch when the page reports the rankings as out of date, or off-box against a read replica or restored copy if the VPS has less than about 600 MB of free memory.
+
+The method (`rank-v1`, `src/lib/analytics/method.ts`) and the subject definitions (`src/lib/analytics/subjects.ts`) are reviewed in git; changing the method's rules should bump `METHOD`, which hides older snapshots until the next refresh.
 
 ## Paid-call bounds
 
@@ -120,6 +140,6 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 ## Caching
 
 - Pages render dynamically so the CSP nonce can be applied.
-- Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
+- Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. Analytics results for visitor queries (coverage and sources) use their own 200-entry memo, so they never push these entries out. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
 - Questions, answers, keys and operator data are never put in the public memo. The separate 5-minute answer cache is keyed by the normalised question text, filters and citation flag, so it only returns an answer to someone who sent that same question.
 - Within one request, the video page reads the video once (React `cache()`), shared by metadata and the page.

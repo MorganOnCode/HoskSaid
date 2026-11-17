@@ -10,7 +10,7 @@ export default function NotFound() {
         <div className="row">
           <Link className="pill" href="/">Ask</Link>
           <Link className="pill" href="/library">Library</Link>
-          <Link className="pill" href="/topics">Topics</Link>
+          <Link className="pill" href="/analytics">Analytics</Link>
           <Link className="pill" href="/timeline">Timeline</Link>
           <Link className="pill" href="/agents">Agents</Link>
         </div>
