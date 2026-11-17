@@ -171,8 +171,15 @@ export async function getLibraryVideos(opts: {
   sort?: LibrarySort;
   limit?: number;
   offset?: number;
+  /** Restrict to these YouTube ids (keyword search inside a video scope). */
+  youtubeIds?: string[] | null;
+  /** Published at or after (inclusive). */
+  from?: Date | null;
+  /** Published before (exclusive). */
+  to?: Date | null;
 }): Promise<{ rows: LibraryCard[]; total: number }> {
   const { type, topic, sort = "recent", limit = 24, offset = 0 } = opts;
+  const ids = opts.youtubeIds?.length ? opts.youtubeIds : null;
   const q = opts.q?.trim().slice(0, MAX_LIBRARY_QUERY) || null;
   const like = q ? `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const order =
@@ -209,6 +216,9 @@ export async function getLibraryVideos(opts: {
     WHERE v.status = 'completed'
       ${type ? sql`AND v.video_type = ${type}` : sql``}
       ${topic ? sql`AND EXISTS (SELECT 1 FROM video_topics vt JOIN topics t ON t.id = vt.topic_id WHERE vt.video_id = v.id AND t.slug = ${topic})` : sql``}
+      ${ids ? sql`AND v.youtube_id IN ${sql(ids)}` : sql``}
+      ${opts.from ? sql`AND v.published_at >= ${opts.from}` : sql``}
+      ${opts.to ? sql`AND v.published_at < ${opts.to}` : sql``}
       ${like
         ? sql`AND (v.title ILIKE ${like}
                    OR EXISTS (SELECT 1 FROM video_tags vt2 JOIN tags tg2 ON tg2.id = vt2.tag_id WHERE vt2.video_id = v.id AND tg2.name ILIKE ${like})

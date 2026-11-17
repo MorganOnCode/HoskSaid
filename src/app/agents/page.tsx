@@ -6,9 +6,28 @@ export const metadata = { title: "Agents — MCP & API" };
 
 const BASE = process.env.PUBLIC_BASE_URL || "https://thehosksaid.com";
 
+/** Retrieval-only workflow for a client that runs its own model. */
+const WORKFLOW = `// 1. Find passages. search_segments = semantic (1 site-funded embedding, daily-capped);
+//    search_keyword = keyword over full transcripts (no model, no embedding).
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_segments",
+  "arguments":{"query":"What has Charles said about Hydra throughput?","limit":8,
+               "date_from":"2025-01-01"}}}
+
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_keyword",
+  "arguments":{"query":"hydra \\"transactions per second\\"","limit":10}}}
+
+// 2. Optionally widen one hit: neighbours or the full transcript.
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_segment",
+  "arguments":{"segment_id":"<segment_id from step 1>"}}}
+
+// 3. Your client gives the passages (text, citation, url) to YOUR model,
+//    with your own OpenAI / Anthropic / local credentials, and asks it to cite
+//    only those passages. HoskSaid never sees or stores your model key.`;
+
 const REST = [
   { m: "POST", p: "/api/ask", d: "Synthesized, citation-backed answer (query ≤ 1000 chars)." },
-  { m: "GET", p: "/api/search?q=", d: "Raw semantic search over segments." },
+  { m: "GET", p: "/api/search?q=", d: "Raw semantic search over segments (one site-funded embedding, no answer)." },
+  { m: "GET", p: "/api/search/keyword?q=", d: "Keyword search over titles, tags and full transcripts (no model call, no embedding)." },
   { m: "GET", p: "/api/videos", d: "Paginated catalogue (type, topic, sort, cursor)." },
   { m: "GET", p: "/api/videos/{id}", d: "One video: chapters, topics, counts." },
   { m: "GET", p: "/api/topics", d: "Clustered topics with counts." },
@@ -26,6 +45,9 @@ const FILES = [
 
 const SNIPPET = `# Add the MCP server (Claude Code example)
 claude mcp add --transport http thehosksaid ${BASE}/mcp
+
+# Retrieval only: passages + citations for your own model
+curl -s ${BASE}/api/search?q=hydra+throughput&limit=8
 
 # Or call the REST Ask API directly
 curl -s ${BASE}/api/ask \\
@@ -56,7 +78,7 @@ export default function AgentsPage() {
 
       <section className="ag-sec">
         <div className="sec-head"><h2>MCP <em>tools</em></h2><span className="ln" /><span className="more">{manifest.tools.length} TOOLS</span></div>
-        <p className="intro">All tools return JSON and never change the archive. <code>search_archive</code> returns the same shape as <code>POST /api/ask</code> — an answer with <code>citations[]</code> and <code>sources[]</code>. It runs a paid model call on the site&apos;s budget and stores the question and answer (see <a href="/privacy" style={{ textDecoration: "underline" }}>privacy</a>); <code>search_segments</code> spends one embedding call and stores nothing. Site-funded calls have a daily site-wide cap and a smaller daily allowance per client, so they can return a <code>site_budget_exhausted</code> or <code>client_quota_exhausted</code> error. A batch POST may hold at most 8 messages, and each one counts against your rate limit.</p>
+        <p className="intro">All tools return JSON and never change the archive. <code>search_segments</code> and <code>search_keyword</code> are retrieval only: they return bounded source passages with titles, dates, timestamps, deep links and a ready-made <code>citation</code> string, and never generate an answer. <code>search_archive</code> is the optional answer tool: it returns the same shape as <code>POST /api/ask</code> — an answer with <code>citations[]</code> and <code>sources[]</code>. It runs a paid model call on the site&apos;s budget and stores the question and answer (see <a href="/privacy" style={{ textDecoration: "underline" }}>privacy</a>); <code>search_segments</code> spends one embedding call and stores nothing. Site-funded calls have a daily site-wide cap and a smaller daily allowance per client, so they can return a <code>site_budget_exhausted</code> or <code>client_quota_exhausted</code> error. A batch POST may hold at most 8 messages, and each one counts against your rate limit.</p>
         <div className="tool-grid">
           {manifest.tools.map((t) => {
             const args = Object.keys((t.inputSchema?.properties as object) || {});
@@ -71,6 +93,22 @@ export default function AgentsPage() {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      <section className="ag-sec">
+        <div className="sec-head"><h2>Use your <em>own model</em></h2><span className="ln" /><span className="more">RETRIEVAL ONLY</span></div>
+        <p className="intro">
+          Your MCP client (Claude Desktop, Claude Code, an OpenAI Agents app, or a script driving a local model) keeps its own model
+          credentials. Call the retrieval tools, then let your model write the answer from the returned passages and cite their links.
+          Never put a provider key in a tool argument: no HoskSaid tool accepts one. Semantic retrieval still spends this site&apos;s
+          shared embedding allowance (per client and site-wide, reset 00:00 UTC), and your own model key does not raise it; when it runs
+          out, <code>search_keyword</code> keeps working. On the website itself, &ldquo;Your own API key&rdquo; does the same for a
+          browser visitor: you choose OpenAI, Anthropic or OpenRouter and a model, and that provider writes the answer on your account.
+        </p>
+        <div className="term">
+          <div className="bar"><span className="d" /><span className="d" /><span className="d" /><span className="t">POST {BASE.replace(/^https?:\/\//, "")}/mcp</span></div>
+          <div className="body">{WORKFLOW}</div>
         </div>
       </section>
 
@@ -106,6 +144,7 @@ export default function AgentsPage() {
               <li><span className="dot">◆</span><span><b>600 req/min</b>.</span></li>
               <li><span className="dot">◆</span><span>Contact the maintainer for a key.</span></li>
               <li><span className="dot">◆</span><span>Unrecognized or empty bearer keys return <b>401</b>.</span></li>
+              <li><span className="dot">◆</span><span>This is a <b>HoskSaid access key</b>, not a model key: never send an OpenAI, Anthropic or OpenRouter key here.</span></li>
             </ul>
           </div>
         </div>

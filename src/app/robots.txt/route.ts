@@ -2,7 +2,7 @@ const BASE = process.env.PUBLIC_BASE_URL || "https://thehosksaid.com";
 
 // One group per agent: a crawler obeys only the most specific group naming it,
 // so every group repeats the same Disallow lines for paid/transient endpoints.
-const DISALLOW = ["/api/ask", "/api/search", "/mcp"];
+const DISALLOW = ["/api/ask", "/api/converse", "/api/search", "/mcp"];
 const AGENTS = ["*", "GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended"];
 
 const ROBOTS = `# Independent transcript index of Charles Hoskinson's public videos.

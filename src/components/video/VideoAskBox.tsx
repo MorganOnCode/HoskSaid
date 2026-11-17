@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAsk } from "@/components/ask/AskProvider";
+import { EngineChooser } from "@/components/ask/EngineChooser";
 
 /** Scoped question box on the video page. The AskProvider it sits inside is
  *  configured with fixedFilters={video_ids:[id]}, so answers cover only this video. */
@@ -24,6 +25,7 @@ export function VideoAskBox({ videoTitle, segmentCount }: { videoTitle: string; 
         }}
         placeholder={placeholder}
         rows={1}
+        maxLength={1000}
         aria-label={`Ask about ${videoTitle}`}
       />
       <div className="vbar">
@@ -32,6 +34,7 @@ export function VideoAskBox({ videoTitle, segmentCount }: { videoTitle: string; 
         </div>
         <button className="send" aria-label="Ask" onClick={() => value.trim() && submit(value)}>→</button>
       </div>
+      <EngineChooser />
     </div>
   );
 }

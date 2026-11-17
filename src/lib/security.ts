@@ -62,3 +62,31 @@ export function canonicalRedirect(
   }
   return null;
 }
+
+/**
+ * Same-origin check for browser-only POST endpoints (the visitor-key
+ * conversation). The browser always sends Origin on a cross-origin or POST
+ * fetch; a missing, foreign or cross-site origin is refused, so another site
+ * cannot drive visitors' keys (or this site's retrieval budget) through it.
+ * Accepts the canonical public origin or the origin the request was addressed to.
+ */
+export function isSameOriginRequest(
+  req: { origin: string | null; host: string | null; secFetchSite: string | null },
+  baseUrl: string
+): boolean {
+  if (req.secFetchSite && req.secFetchSite !== "same-origin") return false;
+  if (!req.origin || req.origin === "null") return false;
+  let origin: URL;
+  try {
+    origin = new URL(req.origin);
+  } catch {
+    return false;
+  }
+  if (origin.protocol !== "https:" && origin.protocol !== "http:") return false;
+  try {
+    if (origin.origin === new URL(baseUrl).origin) return true;
+  } catch {
+    /* fall through to the Host comparison */
+  }
+  return !!req.host && origin.host.toLowerCase() === req.host.toLowerCase();
+}

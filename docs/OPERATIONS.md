@@ -109,6 +109,29 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 
 `npx tsx src/cli/hosk.ts usage` shows today's site-wide counts.
 
+## Visitor keys (bring your own key)
+
+`POST /api/converse` lets a website visitor answer with their own OpenAI, Anthropic or OpenRouter key and an explicitly chosen model. It needs no configuration and no site credential.
+
+- **Fixed hosts.** The server calls only `https://api.openai.com/v1/chat/completions`, `https://api.anthropic.com/v1/messages` or `https://openrouter.ai/api/v1/chat/completions`, through the official SDKs over a guarded transport that refuses any other URL, method or redirect. There are no custom provider URLs and no server requests to private networks. The CSP `connect-src` stays `'self'`: the browser only talks to this site.
+- **No environment pickup.** The key is passed explicitly and the outgoing headers are rebuilt from an allow-list, so `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, workspace ids, profiles and base-URL overrides never reach the provider. SDK logging, telemetry and retries are off.
+- **One attempt, no fallback.** A failure, timeout or refusal returns `502`/`504 provider_error` with a fixed `provider_error` code and message (`site_model_used: false`). It never retries on another model, another provider or the site's key. Provider error text is never echoed or logged; the log line is `[byok] <provider> call failed: <code>`.
+- **Key handling.** The key travels in the `x-provider-key` header only, is used for that one call and is not stored, cached or logged. It is never used as an identity: rate limits, allowances and the in-flight limit key on the normal limiter identity. In the browser it lives in module memory only (no local/session storage, cookies or URL), with *Forget key*.
+- **Same origin.** The route serves same-origin browser requests only (`Origin` must be this site; `Sec-Fetch-Site`, when sent, must be `same-origin`), so other sites cannot drive it.
+- **Budgets.** Visitor answers never reserve, debit or wait on `SITE_DAILY_ANSWER_CAP` / `CLIENT_DAILY_ANSWER_CAP`. Retrieval still spends one site-funded query embedding under the normal embedding caps; when those are spent the response is `client_quota_exhausted` / `site_budget_exhausted` with `budget: "embedding"`, `retrieval_limited: true` and a `keyword_search` link, and the provider is not called. The concurrency gate is taken before retrieval, so a saturated gate refuses without spending an embedding.
+- **Isolation.** Visitor questions and answers are not written to `answers`, not put in the answer cache, and their query embeddings are not added to the embedding cache (an existing cached vector may be reused).
+- **Conversation.** The browser keeps the thread. A follow-up sends at most 4 earlier turns (answers ≤2000 characters) plus up to 12 cited segment ids per turn; the server re-fetches at most 6 of those ids and drops any that are missing or outside the conversation's video/date/topic scope. Earlier answers are passed as context marked "not evidence", and citations point only at segments supplied in the current call. An answer that cites nothing is returned with no sources (`grounded: false`).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `BYOK_MAX_CONCURRENT_CALLS` | 4 | visitor-key provider calls in flight per process; queued callers wait up to 15 s, then `503 busy` |
+| `BYOK_MAX_IN_FLIGHT_PER_CLIENT` | 2 | visitor-key requests one client may have open; more get `429 too_many_in_flight` |
+| `BYOK_PROVIDER_TIMEOUT_MS` | 90000 | per-call provider timeout |
+
+Per-call bounds: body ≤48 KiB, question ≤1000 characters, 12 context segments × ≤1500 characters, answer output ≤6000 tokens (reasoning tokens included, billed to the visitor).
+
+**Activation:** the route ships with the code; there is nothing to configure. **Rollback:** redeploy the previous image. To disable the route alone, block `POST /api/converse` at the edge; the rest of the site is unaffected.
+
 ## Security and privacy
 
 - **Proxy (`src/proxy.ts`)** sets a per-request nonce Content-Security-Policy on pages. With `CANONICAL_REDIRECTS=true` (set in the production Compose file) it also issues a 308 from `http` to `https`, using the tunnel's `X-Forwarded-Proto`, and from `www.` to the apex.
@@ -121,5 +144,5 @@ Repeated questions are served from a 5-minute in-memory answer cache, and repeat
 
 - Pages render dynamically so the CSP nonce can be applied.
 - Public browse data is memoised in process: catalogue lists and topics for 120 s, archive stats for 600 s. `PUBLIC_DATA_CACHE_SECONDS` overrides this.
-- Questions, answers, keys and operator data are never put in the public memo. The separate 5-minute answer cache is keyed by the normalised question text, filters and citation flag, so it only returns an answer to someone who sent that same question.
+- Questions, answers, keys and operator data are never put in the public memo. Visitor-key answers are never cached at all. The separate 5-minute answer cache is keyed by the normalised question text, filters and citation flag, so it only returns an answer to someone who sent that same question.
 - Within one request, the video page reads the video once (React `cache()`), shared by metadata and the page.

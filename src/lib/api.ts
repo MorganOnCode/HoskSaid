@@ -21,6 +21,10 @@ export interface ApiSegment {
   text: string;
   similarity: number;
   url: string;
+  /** Publication date of the segment's video (YYYY-MM-DD). Search results only. */
+  published_at?: string | null;
+  /** Ready-to-quote attribution: title, date, timestamp (when known) and link. Search results only. */
+  citation?: string;
 }
 
 export interface ApiVideo {
@@ -49,26 +53,34 @@ function deepLink(youtubeId: string, start: number | null): string {
  */
 export async function searchSegments(
   query: string,
-  opts: { client: string; limit?: number; videoId?: string; from?: Date | null; to?: Date | null }
+  opts: { client: string; limit?: number; videoId?: string; videoIds?: string[]; from?: Date | null; to?: Date | null }
 ): Promise<ApiSegment[]> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT);
+  const ids = [...new Set([...(opts.videoId ? [opts.videoId] : []), ...(opts.videoIds ?? [])])];
   const chunks = await retrieveChunks(
     query,
-    { youtubeIds: opts.videoId ? [opts.videoId] : null, topicSlugs: null, from: opts.from ?? null, to: opts.to ?? null },
+    { youtubeIds: ids.length ? ids : null, topicSlugs: null, from: opts.from ?? null, to: opts.to ?? null },
     opts.client,
     limit
   );
-  return chunks.map((c) => ({
-    segment_id: c.id,
-    video_id: c.youtube_id,
-    video_title: decodeEntities(c.title),
-    start: c.start_time,
-    end: c.end_time,
-    timestamp: formatTimecode(c.start_time),
-    text: decodeEntities(c.content),
-    similarity: Math.round((c.similarity ?? 0) * 100),
-    url: deepLink(c.youtube_id, c.start_time),
-  }));
+  return chunks.map((c) => {
+    const title = decodeEntities(c.title);
+    const date = isoDate(c.published_at);
+    const url = deepLink(c.youtube_id, c.start_time);
+    return {
+      segment_id: c.id,
+      video_id: c.youtube_id,
+      video_title: title,
+      start: c.start_time,
+      end: c.end_time,
+      timestamp: formatTimecode(c.start_time),
+      text: decodeEntities(c.content),
+      similarity: Math.round((c.similarity ?? 0) * 100),
+      url,
+      published_at: date,
+      citation: `"${title}" (${date ?? "undated"})${c.start_time != null ? ` at ${formatTimecode(c.start_time)}` : ""}, ${url}`,
+    };
+  });
 }
 
 /** The handoff `video` atom (GET /api/videos/{id}, get_video tool). */
@@ -214,4 +226,60 @@ export async function listTopicsApi() {
     segment_count: t.segment_count,
     trend_pct: t.trend_pct,
   }));
+}
+
+export interface ApiKeywordHit {
+  video_id: string; // youtube_id
+  title: string;
+  published_at: string | null;
+  matched_in: "title" | "tag" | "transcript" | null;
+  /** Plain-text transcript excerpt around the first match (transcript matches only). */
+  snippet: string | null;
+  /** Deep link; transcript matches open the video with its transcript search prefilled. */
+  url: string;
+  source_url: string;
+  segment_count: number;
+  /** False when the video has no embedded segments, so only keyword search reaches it. */
+  semantic_search_available: boolean;
+}
+
+export const MAX_KEYWORD_QUERY = 200;
+
+/**
+ * Keyword search over titles, tags and full transcripts (Postgres full-text
+ * search; the same query as /library). It makes no model call and spends no
+ * embedding, so it works without any provider key or remaining allowance, and
+ * it reaches videos that have no semantic segments.
+ */
+export async function keywordSearchApi(
+  query: string,
+  opts: { youtubeIds?: string[] | null; from?: Date | null; to?: Date | null; limit?: number; offset?: number }
+): Promise<{ items: ApiKeywordHit[]; total: number; mode: "keyword"; model_calls: 0 }> {
+  const q = query.trim().slice(0, MAX_KEYWORD_QUERY);
+  const { getLibraryVideos } = await import("./browse");
+  const { rows, total } = await getLibraryVideos({
+    q,
+    sort: "recent",
+    limit: clampInt(opts.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
+    offset: clampInt(opts.offset, 0, 0, 1000),
+    youtubeIds: opts.youtubeIds ?? null,
+    from: opts.from ?? null,
+    to: opts.to ?? null,
+  });
+  return {
+    items: rows.map((r) => ({
+      video_id: r.youtube_id,
+      title: decodeEntities(r.title),
+      published_at: isoDate(r.published_at),
+      matched_in: r.matched_in,
+      snippet: r.snippet ? decodeEntities(r.snippet.replace(/[\u0001\u0002]/g, "")) : null,
+      url: `${BASE}/video/${r.youtube_id}${r.matched_in === "transcript" ? `?q=${encodeURIComponent(q)}` : ""}`,
+      source_url: `https://www.youtube.com/watch?v=${r.youtube_id}`,
+      segment_count: r.segment_count,
+      semantic_search_available: r.segment_count > 0,
+    })),
+    total,
+    mode: "keyword",
+    model_calls: 0,
+  };
 }

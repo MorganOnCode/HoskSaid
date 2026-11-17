@@ -4,6 +4,7 @@ import { clientIdentity, rateLimited } from "@/lib/ratelimit";
 import { readJsonBody } from "@/lib/body";
 import { MAX_ASK_BODY_BYTES, validateFilters, validateQuery } from "@/lib/limits";
 import { errorResponse, jsonError } from "@/lib/errors";
+import { PROVIDER_KEY_HEADER } from "@/lib/byok-catalog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,16 @@ export async function POST(request: NextRequest) {
 
   const requestId = crypto.randomUUID().slice(0, 8);
   const noStore = { "Cache-Control": "no-store", "x-request-id": requestId };
+
+  // A provider key belongs to POST /api/converse. Refuse it here rather than
+  // answer on the site model while the caller believes its own key was used.
+  if (request.headers.get(PROVIDER_KEY_HEADER)) {
+    return jsonError(400, {
+      error: "use_converse_endpoint",
+      message: "This endpoint answers with the site's model only. Visitor-key answers use POST /api/converse.",
+      request_id: requestId,
+    });
+  }
 
   const body = await readJsonBody(request, MAX_ASK_BODY_BYTES);
   if (!body.ok) return jsonError(body.status, { error: body.error, request_id: requestId });

@@ -207,6 +207,39 @@ export async function matchChunksScoped(
     `;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isSegmentId(s: unknown): s is string {
+    return typeof s === "string" && UUID_RE.test(s);
+}
+
+/**
+ * Re-fetch segments by id, keeping only those that exist, belong to a
+ * completed video and fall inside `scope` (the same rules as
+ * match_transcript_chunks_scoped). Ids are pointers supplied by a client and
+ * are never trusted as evidence: the returned text always comes from the DB.
+ * Order follows `ids`; similarity is 0 (not ranked).
+ */
+export async function getSegmentsInScope(ids: string[], scope: ChunkScope = {}): Promise<ScopedChunk[]> {
+    const wanted = [...new Set(ids.filter(isSegmentId).map((i) => i.toLowerCase()))];
+    if (!wanted.length) return [];
+    const rows = await sql<ScopedChunk[]>`
+        SELECT tc.id, tc.video_id, v.youtube_id, v.title, v.published_at,
+               tc.content, tc.start_time, tc.end_time, 0::float AS similarity
+        FROM transcript_chunks tc
+        JOIN videos v ON v.id = tc.video_id AND v.status = 'completed'
+        WHERE tc.id = ANY (${wanted}::uuid[])
+          AND (${scope.youtubeIds?.length ? scope.youtubeIds : null}::text[] IS NULL OR v.youtube_id = ANY (${scope.youtubeIds?.length ? scope.youtubeIds : null}::text[]))
+          AND (${scope.from ?? null}::timestamptz IS NULL OR v.published_at >= ${scope.from ?? null}::timestamptz)
+          AND (${scope.to ?? null}::timestamptz IS NULL OR v.published_at < ${scope.to ?? null}::timestamptz)
+          AND (${scope.topicSlugs?.length ? scope.topicSlugs : null}::text[] IS NULL OR EXISTS (
+                SELECT 1 FROM video_topics vt JOIN topics t ON t.id = vt.topic_id
+                WHERE vt.video_id = v.id AND t.slug = ANY (${scope.topicSlugs?.length ? scope.topicSlugs : null}::text[])))
+    `;
+    const byId = new Map(rows.map((r) => [String(r.id).toLowerCase(), r]));
+    return wanted.map((id) => byId.get(id)).filter((r): r is ScopedChunk => !!r);
+}
+
 // ---------------------------------------------------------------------------
 // App helpers (used by Next pages + /api routes)
 // ---------------------------------------------------------------------------

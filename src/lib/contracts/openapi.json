@@ -126,7 +126,7 @@
             "description": "rate_limited, or client_quota_exhausted (your per-client daily allowance is used up; `budget` is `answer` or `embedding`; resets 00:00 UTC). Retry-After header set."
           },
           "400": {
-            "description": "Invalid input: query_required, query_too_long, invalid_filters or invalid_body."
+            "description": "Invalid input: query_required, query_too_long, invalid_filters or invalid_body. use_converse_endpoint when an x-provider-key header is sent: this endpoint answers only with the site's model."
           },
           "401": {
             "description": "Unrecognized or empty bearer key."
@@ -142,7 +142,7 @@
     },
     "/search": {
       "get": {
-        "summary": "Raw semantic search over transcript segments.",
+        "summary": "Raw semantic search over transcript segments (retrieval only: one site-funded embedding, never an answer).",
         "parameters": [
           {
             "name": "q",
@@ -275,6 +275,194 @@
         "responses": {
           "200": {
             "description": "Topic list."
+          }
+        }
+      }
+    },
+    "/search/keyword": {
+      "get": {
+        "summary": "Keyword search over titles, tags and full transcripts. No model call and no embedding; also reaches videos without semantic segments.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Postgres websearch syntax."
+          },
+          {
+            "name": "video_id",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ items[]: { video_id, title, published_at, matched_in, snippet, url, source_url, segment_count, semantic_search_available }, total, mode: \"keyword\", model_calls: 0 }"
+          },
+          "400": {
+            "description": "query_too_long, invalid_video_id or invalid_filters."
+          },
+          "429": {
+            "description": "rate_limited."
+          }
+        }
+      }
+    },
+    "/converse": {
+      "post": {
+        "summary": "Website-only: a grounded answer written by the visitor's own provider (OpenAI, Anthropic or OpenRouter) with the visitor's key. Same-origin browser requests only; agents should use the MCP retrieval tools with their own model instead.",
+        "parameters": [
+          {
+            "name": "x-provider-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The visitor's provider key. Forwarded to the provider's fixed official host for this one request; never stored, logged or cached."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "provider",
+                  "model",
+                  "query"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai",
+                      "anthropic",
+                      "openrouter"
+                    ]
+                  },
+                  "model": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "description": "Chosen explicitly; never defaulted or substituted."
+                  },
+                  "query": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "filters": {
+                    "type": "object",
+                    "description": "Same as /ask: date_from, date_to, video_ids, topics."
+                  },
+                  "history": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "description": "Earlier turns, context only (not evidence).",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "question",
+                        "answer"
+                      ],
+                      "properties": {
+                        "question": {
+                          "type": "string",
+                          "maxLength": 1000
+                        },
+                        "answer": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "segment_ids": {
+                          "type": "array",
+                          "maxItems": 12,
+                          "items": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "description": "Pointers re-fetched and re-checked against scope by the server."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "As /ask, plus generated_by { engine: visitor_key, provider, model }, grounded, retrieval { mode, funded_by: site, fresh_segments, carried_segments, carried_dropped } and conversation { history_turns_used }. Not stored or cached."
+          },
+          "400": {
+            "description": "provider_required, unsupported_provider, model_required, invalid_model, provider_key_required, invalid_provider_key, history_too_long, invalid_history, query_too_long or invalid_filters."
+          },
+          "403": {
+            "description": "cross_origin_forbidden."
+          },
+          "422": {
+            "description": "{ matched: 0, insufficient_evidence: true, keyword_search }: nothing in scope cleared the relevance bar; the provider was not called."
+          },
+          "429": {
+            "description": "rate_limited, too_many_in_flight, or client_quota_exhausted (`budget`: `embedding`, `retrieval_limited`, `keyword_search`)."
+          },
+          "502": {
+            "description": "provider_error (`provider_error`: invalid_key, insufficient_quota, rate_limited, model_not_found, rejected, refused, output_limit, unavailable, bad_response). `site_model_used` is always false."
+          },
+          "503": {
+            "description": "site_budget_exhausted (`budget`: `embedding`, `retrieval_limited`, `keyword_search`) or busy. Visitor answers never use or wait on the site answer budget."
+          },
+          "504": {
+            "description": "provider_error with provider_error: timeout."
           }
         }
       }
